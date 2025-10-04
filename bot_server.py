@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
 # ========================================================================================
-# นี่คือไฟล์ Server สำหรับ LINE Bot จัดตารางเวร (เวอร์ชัน 8)
-# เพิ่มความสามารถในการ "ดูข้อมูลการลา" จาก Firebase
+# นี่คือไฟล์ Server สำหรับ LINE Bot จัดตารางเวร (เวอร์ชัน 9 - ชุดใหญ่ไฟกระพริบ!)
+# เพิ่มความสามารถในการ "จัดเวรประจำวัน"
 # ========================================================================================
 
 from flask import Flask, request, abort
@@ -21,7 +21,7 @@ from linebot.models import (
 )
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta # <-- เพิ่ม timedelta สำหรับคำนวณเวลา
 import json
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -77,10 +77,13 @@ def handle_message(event):
     user_id = event.source.user_id
     user_message = event.message.text
 
-    # --- ส่วนจัดการ State การสนทนา (เหมือนเดิม) ---
+    # --- ส่วนจัดการ State การสนทนา ---
     if user_id in user_states:
         current_step = user_states[user_id]['step']
+
+        # --- State การแจ้งลา (เหมือนเดิม) ---
         if current_step == 'awaiting_leave_type':
+            # ... (โค้ดส่วนนี้เหมือนเดิม)
             leave_type = user_message
             if leave_type == '#ยกเลิก':
                 del user_states[user_id]
@@ -95,6 +98,7 @@ def handle_message(event):
             return
 
         elif current_step == 'awaiting_name':
+            # ... (โค้ดส่วนนี้เหมือนเดิม)
             selected_name = user_message
             if selected_name == '#ยกเลิก':
                 del user_states[user_id]
@@ -110,6 +114,90 @@ def handle_message(event):
             reply_message = TextSendMessage(text="กรุณาเลือกวันที่เริ่มต้นลาครับ", quick_reply=date_picker_start)
             line_bot_api.reply_message(event.reply_token, reply_message)
             return
+        
+        # ==============================================================================
+        # ส่วนที่เพิ่มเข้ามาใหม่: จัดการ State การจัดเวร
+        # ==============================================================================
+        elif current_step == 'awaiting_sergeant':
+            sergeant_name = user_message
+            if sergeant_name == '#ยกเลิก':
+                del user_states[user_id]
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ยกเลิกการจัดเวรเรียบร้อยแล้วครับ"))
+                return
+            
+            # --- เริ่มกระบวนการคำนวณตารางเวร ---
+            try:
+                # 1. ดึงข้อมูลคนลาจาก Firebase (เหมือนฟังก์ชัน #ดูข้อมูลลา)
+                today_str = datetime.now().strftime('%Y-%m-%d')
+                docs_query = db.collection('leave_requests').where('start_date', '<=', today_str).stream()
+                on_leave_names = []
+                for doc in docs_query:
+                    leave_data = doc.to_dict()
+                    if leave_data.get('end_date', '1970-01-01') >= today_str:
+                        on_leave_names.append(leave_data['name'])
+                
+                # 2. คัดกรองกำลังพลที่พร้อมปฏิบัติหน้าที่
+                available_personnel = [p for p in personnel_list if p not in on_leave_names]
+                
+                # 3. ตรวจสอบว่าสิบเวรที่เลือกมานั้นว่างหรือไม่
+                if sergeant_name not in available_personnel:
+                    line_bot_api.reply_message(
+                        event.reply_token,
+                        TextSendMessage(text=f"⚠️ ขออภัยครับ {sergeant_name} ติดภารกิจ (ลา/ราชการ) ไม่สามารถเป็นสิบเวรได้ กรุณาลองใหม่อีกครั้ง")
+                    )
+                    del user_states[user_id]
+                    return
+
+                # 4. เตรียมรายชื่อสำหรับจัดผลัด (ไม่รวมสิบเวร)
+                duty_personnel = [p for p in available_personnel if p != sergeant_name]
+                
+                if not duty_personnel:
+                    reply_text = f"🗓️ **ตารางเวรประจำวันที่ {datetime.now().strftime('%d/%m/%Y')}**\n\n"
+                    reply_text += f"**สิบเวร:** {sergeant_name}\n\n"
+                    reply_text += "⚠️ ไม่มีกำลังพลเหลือสำหรับจัดผลัดเวร"
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+                    del user_states[user_id]
+                    return
+
+                # 5. คำนวณเวลาเข้าเวร
+                start_time = datetime.strptime("18:00", "%H:%M")
+                total_minutes = 12 * 60 # 12 ชั่วโมง
+                minutes_per_person = total_minutes / len(duty_personnel)
+                
+                schedule = []
+                current_time = start_time
+                for person in duty_personnel:
+                    end_time = current_time + timedelta(minutes=minutes_per_person)
+                    # จัดการกรณีข้ามวันเที่ยงคืน
+                    end_display_time = end_time
+                    if end_time.day > start_time.day:
+                        end_display_time = datetime.strptime(end_time.strftime('%H:%M'), '%H:%M')
+                    
+                    time_slot = f"{current_time.strftime('%H:%M')} - {end_display_time.strftime('%H:%M')}"
+                    schedule.append({'name': person, 'time': time_slot})
+                    current_time = end_time
+
+                # 6. สร้างข้อความตารางเวร
+                today_formatted = datetime.now().strftime('%d/%m/%Y')
+                reply_text = f"🗓️ **ตารางเวรประจำวันที่ {today_formatted}**\n\n"
+                reply_text += f"**สิบเวร:** {sergeant_name}\n\n"
+                reply_text += "**ผลัดเวร:**\n"
+                for i, entry in enumerate(schedule, 1):
+                    reply_text += f"{i}. {entry['time']}: {entry['name']}\n"
+                
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text.strip()))
+            
+            except Exception as e:
+                app.logger.error(f"Error during scheduling: {e}")
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="เกิดข้อผิดพลาดระหว่างการคำนวณตารางเวร"))
+            
+            finally:
+                # 7. ล้าง state ไม่ว่าจะสำเร็จหรือล้มเหลว
+                if user_id in user_states:
+                    del user_states[user_id]
+            return
+        # ==============================================================================
+
 
     # --- ส่วนจัดการคำสั่งหลัก ---
     if user_message == '#ยกเลิก':
@@ -136,11 +224,9 @@ def handle_message(event):
             QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))
         ])
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="กรุณาเลือกประเภทการลาครับ", quick_reply=leave_type_buttons))
-    
-    # ==============================================================================
-    # ส่วนที่เพิ่มเข้ามาใหม่: จัดการคำสั่ง "#ดูข้อมูลลา"
-    # ==============================================================================
+
     elif user_message == '#ดูข้อมูลลา':
+        # ... (โค้ดส่วนนี้เหมือนเดิม)
         if not db:
             line_bot_api.reply_message(
                 event.reply_token,
@@ -150,18 +236,13 @@ def handle_message(event):
 
         try:
             today_str = datetime.now().strftime('%Y-%m-%d')
-            
-            # 1. ค้นหาข้อมูลการลาทั้งหมดที่ "เริ่ม" ก่อนหรือภายในวันนี้
             docs_query = db.collection('leave_requests').where('start_date', '<=', today_str).stream()
-
             on_leave_today = []
             for doc in docs_query:
                 leave_data = doc.to_dict()
-                # 2. กรองข้อมูลเฉพาะรายการที่ "สิ้นสุด" หลังหรือภายในวันนี้
                 if leave_data.get('end_date', '1970-01-01') >= today_str:
                     on_leave_today.append(leave_data)
             
-            # 3. สร้างข้อความตอบกลับ
             if not on_leave_today:
                 reply_text = "✅ ไม่มีกำลังพลลา/ราชการในวันนี้ครับ"
             else:
@@ -175,7 +256,6 @@ def handle_message(event):
                         f"**ช่วงเวลา:** {start_date_formatted} - {end_date_formatted}\n\n"
                     )
             
-            # 4. ส่งข้อความกลับไป
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text.strip()))
 
         except Exception as e:
@@ -184,6 +264,20 @@ def handle_message(event):
                 event.reply_token,
                 TextSendMessage(text="⚠️ เกิดข้อผิดพลาดในการดึงข้อมูลการลา")
             )
+        return
+
+    # ==============================================================================
+    # ส่วนที่เพิ่มเข้ามาใหม่: จัดการคำสั่ง "#จัดเวร"
+    # ==============================================================================
+    elif user_message == '#จัดเวร':
+        user_states[user_id] = {'step': 'awaiting_sergeant'}
+        sergeant_buttons = [QuickReplyButton(action=MessageAction(label=name, text=name)) for name in personnel_list]
+        sergeant_buttons.append(QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก")))
+        reply_message = TextSendMessage(
+            text="กรุณาเลือกกำลังพลที่จะทำหน้าที่ 'สิบเวร' ครับ",
+            quick_reply=QuickReply(items=sergeant_buttons)
+        )
+        line_bot_api.reply_message(event.reply_token, reply_message)
         return
     # ==============================================================================
 
