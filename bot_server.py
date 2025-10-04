@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
 # ========================================================================================
-# นี่คือไฟล์ Server สำหรับ LINE Bot จัดตารางเวร (เวอร์ชัน 5)
-# เพิ่มความสามารถในการรับข้อมูลวันที่จาก PostbackEvent และถามวันสิ้นสุด
+# นี่คือไฟล์ Server สำหรับ LINE Bot จัดตารางเวร (เวอร์ชัน 6 - สมบูรณ์)
+# เพิ่มความสามารถในการรับวันสิ้นสุด, สรุปข้อมูล, และสิ้นสุดกระบวนการ
 # ========================================================================================
 
 from flask import Flask, request, abort
@@ -17,7 +17,7 @@ from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage,
     QuickReply, QuickReplyButton, MessageAction,
     DatetimePickerAction,
-    PostbackEvent # <-- เพิ่ม import ใหม่สำหรับรับข้อมูลจากปฏิทิน
+    PostbackEvent
 )
 
 import os
@@ -56,15 +56,14 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # ฟังก์ชันนี้จะจัดการกับ "ข้อความตัวอักษร" ที่ผู้ใช้พิมพ์หรือกดจากปุ่ม QuickReply เท่านั้น
+    # ฟังก์ชันนี้จะจัดการกับ "ข้อความตัวอักษร" เท่านั้น
     user_id = event.source.user_id
     user_message = event.message.text
 
     if user_id in user_states:
         current_step = user_states[user_id]['step']
-
+        # ... (โค้ดส่วนนี้เหมือนเดิมทั้งหมด) ...
         if current_step == 'awaiting_leave_type':
-            # ... (ส่วนนี้ทำงานเหมือนเดิม) ...
             leave_type = user_message
             if leave_type == '#ยกเลิก':
                 del user_states[user_id]
@@ -79,7 +78,6 @@ def handle_message(event):
             return
 
         elif current_step == 'awaiting_name':
-            # ... (ส่วนนี้ทำงานเหมือนเดิม) ...
             selected_name = user_message
             if selected_name == '#ยกเลิก':
                 del user_states[user_id]
@@ -96,6 +94,7 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, reply_message)
             return
 
+    # --- ส่วนจัดการคำสั่งเริ่มต้น (เหมือนเดิม) ---
     if user_message == '#ยกเลิก':
         if user_id in user_states:
             del user_states[user_id]
@@ -121,42 +120,63 @@ def handle_message(event):
         ])
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="กรุณาเลือกประเภทการลาครับ", quick_reply=leave_type_buttons))
 
-# ==============================================================================
-# ส่วนที่เพิ่มเข้ามาใหม่: "หู" ข้างที่สองสำหรับรับฟังสัญญาณจากปฏิทิน
-# ==============================================================================
+
 @handler.add(PostbackEvent)
 def handle_postback(event):
+    # ฟังก์ชันนี้จะจัดการกับสัญญาณจากปฏิทิน
     user_id = event.source.user_id
     postback_data = event.postback.data
 
     if user_id in user_states:
         current_step = user_states[user_id]['step']
 
-        # กรณีที่ผู้ใช้เพิ่งเลือก "วันเริ่มต้น"
         if current_step == 'awaiting_start_date' and postback_data == 'action=select_start_date':
+            # ... (ส่วนนี้ทำงานเหมือนเดิม) ...
             selected_date = event.postback.params['date']
             user_states[user_id]['data']['start_date'] = selected_date
             user_states[user_id]['step'] = 'awaiting_end_date'
-            app.logger.info(f"User {user_id} selected start date '{selected_date}'. State: {user_states[user_id]}")
-
-            # ถามหาวันสิ้นสุด โดยกำหนดให้วันต่ำสุดคือวันที่เริ่มต้นที่เพิ่งเลือกไป
             date_picker_end = QuickReply(items=[
-                QuickReplyButton(action=DatetimePickerAction(
-                    label="เลือกวันสิ้นสุด",
-                    data="action=select_end_date",
-                    mode="date",
-                    initial=selected_date,
-                    min=selected_date
-                )),
+                QuickReplyButton(action=DatetimePickerAction(label="เลือกวันสิ้นสุด", data="action=select_end_date", mode="date", initial=selected_date, min=selected_date)),
                 QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))
             ])
             reply_message = TextSendMessage(text="กรุณาเลือกวันสิ้นสุดการลาครับ", quick_reply=date_picker_end)
             line_bot_api.reply_message(event.reply_token, reply_message)
             return
-
-        # (เราจะมาเพิ่ม Logic สำหรับรับ 'วันสิ้นสุด' ที่นี่ในครั้งต่อไป)
-
-# ==============================================================================
+        
+        # ==============================================================================
+        # ส่วนที่เพิ่มเข้ามาใหม่: รอรับ "วันสิ้นสุด"
+        # ==============================================================================
+        elif current_step == 'awaiting_end_date' and postback_data == 'action=select_end_date':
+            selected_end_date = event.postback.params['date']
+            
+            # 1. บันทึกวันสิ้นสุด
+            user_states[user_id]['data']['end_date'] = selected_end_date
+            app.logger.info(f"User {user_id} selected end date '{selected_end_date}'. Final data: {user_states[user_id]['data']}")
+            
+            # 2. ดึงข้อมูลทั้งหมดที่เก็บมา
+            final_data = user_states[user_id]['data']
+            
+            # 3. สร้างข้อความสรุป
+            # (แปลง YYYY-MM-DD เป็น DD/MM/YYYY)
+            start_date_formatted = datetime.strptime(final_data['start_date'], '%Y-%m-%d').strftime('%d/%m/%Y')
+            end_date_formatted = datetime.strptime(final_data['end_date'], '%Y-%m-%d').strftime('%d/%m/%Y')
+            
+            summary_message = (
+                "✅ **บันทึกข้อมูลเรียบร้อย**\n\n"
+                f"**ประเภท:** {final_data['type']}\n"
+                f"**ชื่อ:** {final_data['name']}\n"
+                f"**ตั้งแต่:** {start_date_formatted}\n"
+                f"**ถึง:** {end_date_formatted}"
+            )
+            
+            # 4. ส่งข้อความสรุปกลับไป
+            # (ในอนาคต เราจะเพิ่มโค้ดบันทึกลง Firebase ก่อนส่งข้อความนี้)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=summary_message))
+            
+            # 5. ล้างสถานะของผู้ใช้คนนี้ออกจากหน่วยความจำ เป็นการจบกระบวนการ
+            del user_states[user_id]
+            return
+        # ==============================================================================
 
 # ส่วนสำหรับรัน Server
 if __name__ == "__main__":
