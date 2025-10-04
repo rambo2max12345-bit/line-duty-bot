@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
 # ========================================================================================
-# นี่คือไฟล์ Server สำหรับ LINE Bot จัดตารางเวร (เวอร์ชัน 7)
-# เพิ่มความสามารถในการเชื่อมต่อและบันทึกข้อมูลลง Firebase
+# นี่คือไฟล์ Server สำหรับ LINE Bot จัดตารางเวร (เวอร์ชัน 7.1 - แก้ไขข้อผิดพลาด)
+# ย้ายลำดับการเชื่อมต่อ Firebase เพื่อแก้ไข NameError
 # ========================================================================================
 
 from flask import Flask, request, abort
@@ -22,19 +22,25 @@ from linebot.models import (
 
 import os
 from datetime import datetime
-import json # <-- เพิ่ม import สำหรับจัดการ JSON
-
-# --- ส่วน import และเชื่อมต่อ Firebase ---
+import json
 import firebase_admin
 from firebase_admin import credentials, firestore
 
+# --- ส่วนตั้งค่า LINE ---
+CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN', '8Qa3lq+KjkF68P1W6xAkkuRyoXpz9YyuQI2nOKJRu/ndsvfGLZIft6ltdgYV8vMEbBkz5AWzYoF+CaS7u0OShm uZvo5Yufb6+Xvr4gBti4Gc4cp45MCnyD0cte94vZyyEhLKC3WJKvd9usUXqCwrOgdB04t89/1O/w1cDnyilFU=')
+CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET', '1d0c51790d0bff2b98dbb98dc8f72663')
+# -------------------------
+
+app = Flask(__name__) # <-- สร้าง app ขึ้นมาก่อน
+line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(CHANNEL_SECRET)
+
+# --- ย้ายส่วน import และเชื่อมต่อ Firebase มาไว้ตรงนี้ ---
 try:
-    # ดึงข้อมูล credentials จาก Environment Variable ที่เราตั้งค่าบน Render
     firebase_credentials_json_str = os.environ.get('FIREBASE_CREDENTIALS_JSON')
     if firebase_credentials_json_str:
         firebase_credentials_json = json.loads(firebase_credentials_json_str)
         cred = credentials.Certificate(firebase_credentials_json)
-        # ตรวจสอบว่าเคย initialize แล้วหรือยัง
         if not firebase_admin._apps:
             firebase_admin.initialize_app(cred)
         db = firestore.client()
@@ -46,16 +52,6 @@ except Exception as e:
     db = None
     app.logger.error(f"Firebase connection failed: {e}")
 # -----------------------------------
-
-
-# --- ส่วนตั้งค่า LINE (เหมือนเดิม) ---
-CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN', '8Qa3lq+KjkF68P1W6xAkkuRyoXpz9YyuQI2nOKJRu/ndsvfGLZIft6ltdgYV8vMEbBkz5AWzYoF+CaS7u0OShm uZvo5Yufb6+Xvr4gBti4Gc4cp45MCnyD0cte94vZyyEhLKC3WJKvd9usUXqCwrOgdB04t89/1O/w1cDnyilFU=')
-CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET', '1d0c51790d0bff2b98dbb98dc8f72663')
-# -------------------------
-
-app = Flask(__name__)
-line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(CHANNEL_SECRET)
 
 # --- หน่วยความจำและรายชื่อ (เหมือนเดิม) ---
 user_states = {}
@@ -165,22 +161,18 @@ def handle_postback(event):
             
             final_data = user_states[user_id]['data']
             
-            # --- ส่วนที่เปลี่ยนแปลง: การบันทึกข้อมูลลง Firebase ---
             if db:
                 try:
-                    # เราจะสร้าง collection ชื่อ leave_requests เพื่อเก็บข้อมูลการลา
                     doc_ref = db.collection('leave_requests').document()
                     doc_ref.set({
                         'leave_type': final_data['type'],
                         'name': final_data['name'],
-                        'start_date': final_data['start_date'], # บันทึกเป็น YYYY-MM-DD
-                        'end_date': final_data['end_date'],   # บันทึกเป็น YYYY-MM-DD
-                        'status': 'pending', # สถานะเริ่มต้น
-                        'timestamp': firestore.SERVER_TIMESTAMP # บันทึกเวลาที่สร้างรายการ
+                        'start_date': final_data['start_date'],
+                        'end_date': final_data['end_date'],
+                        'status': 'pending',
+                        'timestamp': firestore.SERVER_TIMESTAMP
                     })
                     app.logger.info(f"Successfully saved data to Firestore for {final_data['name']}")
-                    
-                    # เปลี่ยนข้อความสรุปเพื่อแจ้งว่าบันทึกสำเร็จ
                     summary_message_text = "✅ **บันทึกข้อมูลลงระบบเรียบร้อย**\n\n"
                 except Exception as e:
                     app.logger.error(f"Error saving to Firestore: {e}")
@@ -202,7 +194,6 @@ def handle_postback(event):
             
             del user_states[user_id]
             return
-        # -----------------------------------------------------
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
