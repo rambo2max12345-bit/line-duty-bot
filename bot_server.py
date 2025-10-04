@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
 # ========================================================================================
-# นี่คือไฟล์ Server สำหรับ LINE Bot จัดตารางเวร (เวอร์ชัน 6 - สมบูรณ์)
-# เพิ่มความสามารถในการรับวันสิ้นสุด, สรุปข้อมูล, และสิ้นสุดกระบวนการ
+# นี่คือไฟล์ Server สำหรับ LINE Bot จัดตารางเวร (เวอร์ชัน 7)
+# เพิ่มความสามารถในการเชื่อมต่อและบันทึกข้อมูลลง Firebase
 # ========================================================================================
 
 from flask import Flask, request, abort
@@ -22,8 +22,33 @@ from linebot.models import (
 
 import os
 from datetime import datetime
+import json # <-- เพิ่ม import สำหรับจัดการ JSON
 
-# --- ส่วนตั้งค่า (เหมือนเดิม) ---
+# --- ส่วน import และเชื่อมต่อ Firebase ---
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+try:
+    # ดึงข้อมูล credentials จาก Environment Variable ที่เราตั้งค่าบน Render
+    firebase_credentials_json_str = os.environ.get('FIREBASE_CREDENTIALS_JSON')
+    if firebase_credentials_json_str:
+        firebase_credentials_json = json.loads(firebase_credentials_json_str)
+        cred = credentials.Certificate(firebase_credentials_json)
+        # ตรวจสอบว่าเคย initialize แล้วหรือยัง
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        app.logger.info("Firebase connected successfully.")
+    else:
+        db = None
+        app.logger.warning("FIREBASE_CREDENTIALS_JSON not found. Firebase not connected.")
+except Exception as e:
+    db = None
+    app.logger.error(f"Firebase connection failed: {e}")
+# -----------------------------------
+
+
+# --- ส่วนตั้งค่า LINE (เหมือนเดิม) ---
 CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN', '8Qa3lq+KjkF68P1W6xAkkuRyoXpz9YyuQI2nOKJRu/ndsvfGLZIft6ltdgYV8vMEbBkz5AWzYoF+CaS7u0OShm uZvo5Yufb6+Xvr4gBti4Gc4cp45MCnyD0cte94vZyyEhLKC3WJKvd9usUXqCwrOgdB04t89/1O/w1cDnyilFU=')
 CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET', '1d0c51790d0bff2b98dbb98dc8f72663')
 # -------------------------
@@ -32,10 +57,8 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# --- หน่วยความจำระยะสั้นของ Bot (เหมือนเดิม) ---
+# --- หน่วยความจำและรายชื่อ (เหมือนเดิม) ---
 user_states = {}
-
-# --- รายชื่อกำลังพลทั้งหมด (เหมือนเดิม) ---
 personnel_list = [
     "อส.ทพ.บุญธรรม เขียวเข็ม", "อส.ทพ.ชนะศักดิ์ กาสังข์", "อส.ทพ.สนธยา ปราบณรงค์",
     "อส.ทพ.สื่อสาร นะจ๊ะ", "อส.ทพ.กัมพล ทองศรี", "อส.ทพ.อื่นๆ"
@@ -53,16 +76,13 @@ def callback():
         abort(400)
     return 'OK'
 
-
+# --- ส่วนจัดการข้อความ (handle_message) - เหมือนเดิม ---
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # ฟังก์ชันนี้จะจัดการกับ "ข้อความตัวอักษร" เท่านั้น
     user_id = event.source.user_id
     user_message = event.message.text
-
     if user_id in user_states:
         current_step = user_states[user_id]['step']
-        # ... (โค้ดส่วนนี้เหมือนเดิมทั้งหมด) ...
         if current_step == 'awaiting_leave_type':
             leave_type = user_message
             if leave_type == '#ยกเลิก':
@@ -94,13 +114,11 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, reply_message)
             return
 
-    # --- ส่วนจัดการคำสั่งเริ่มต้น (เหมือนเดิม) ---
     if user_message == '#ยกเลิก':
         if user_id in user_states:
             del user_states[user_id]
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ยกเลิกรายการเรียบร้อยแล้วครับ"))
         return
-
     if user_message == '#Bot01':
         quick_reply_buttons = QuickReply(items=[
             QuickReplyButton(action=MessageAction(label="📝 แจ้งลา/ราชการ", text="#แจ้งลา")),
@@ -108,7 +126,6 @@ def handle_message(event):
             QuickReplyButton(action=MessageAction(label="📄 ดูข้อมูลการลา", text="#ดูข้อมูลลา"))
         ])
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="มีอะไรให้รับใช้ครับนายท่าน", quick_reply=quick_reply_buttons))
-
     elif user_message == '#แจ้งลา':
         user_states[user_id] = {'step': 'awaiting_leave_type', 'data': {}}
         leave_type_buttons = QuickReply(items=[
@@ -119,11 +136,11 @@ def handle_message(event):
             QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))
         ])
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="กรุณาเลือกประเภทการลาครับ", quick_reply=leave_type_buttons))
+# ----------------------------------------------
 
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
-    # ฟังก์ชันนี้จะจัดการกับสัญญาณจากปฏิทิน
     user_id = event.source.user_id
     postback_data = event.postback.data
 
@@ -131,7 +148,6 @@ def handle_postback(event):
         current_step = user_states[user_id]['step']
 
         if current_step == 'awaiting_start_date' and postback_data == 'action=select_start_date':
-            # ... (ส่วนนี้ทำงานเหมือนเดิม) ...
             selected_date = event.postback.params['date']
             user_states[user_id]['data']['start_date'] = selected_date
             user_states[user_id]['step'] = 'awaiting_end_date'
@@ -143,42 +159,51 @@ def handle_postback(event):
             line_bot_api.reply_message(event.reply_token, reply_message)
             return
         
-        # ==============================================================================
-        # ส่วนที่เพิ่มเข้ามาใหม่: รอรับ "วันสิ้นสุด"
-        # ==============================================================================
         elif current_step == 'awaiting_end_date' and postback_data == 'action=select_end_date':
             selected_end_date = event.postback.params['date']
-            
-            # 1. บันทึกวันสิ้นสุด
             user_states[user_id]['data']['end_date'] = selected_end_date
-            app.logger.info(f"User {user_id} selected end date '{selected_end_date}'. Final data: {user_states[user_id]['data']}")
             
-            # 2. ดึงข้อมูลทั้งหมดที่เก็บมา
             final_data = user_states[user_id]['data']
             
-            # 3. สร้างข้อความสรุป
-            # (แปลง YYYY-MM-DD เป็น DD/MM/YYYY)
+            # --- ส่วนที่เปลี่ยนแปลง: การบันทึกข้อมูลลง Firebase ---
+            if db:
+                try:
+                    # เราจะสร้าง collection ชื่อ leave_requests เพื่อเก็บข้อมูลการลา
+                    doc_ref = db.collection('leave_requests').document()
+                    doc_ref.set({
+                        'leave_type': final_data['type'],
+                        'name': final_data['name'],
+                        'start_date': final_data['start_date'], # บันทึกเป็น YYYY-MM-DD
+                        'end_date': final_data['end_date'],   # บันทึกเป็น YYYY-MM-DD
+                        'status': 'pending', # สถานะเริ่มต้น
+                        'timestamp': firestore.SERVER_TIMESTAMP # บันทึกเวลาที่สร้างรายการ
+                    })
+                    app.logger.info(f"Successfully saved data to Firestore for {final_data['name']}")
+                    
+                    # เปลี่ยนข้อความสรุปเพื่อแจ้งว่าบันทึกสำเร็จ
+                    summary_message_text = "✅ **บันทึกข้อมูลลงระบบเรียบร้อย**\n\n"
+                except Exception as e:
+                    app.logger.error(f"Error saving to Firestore: {e}")
+                    summary_message_text = "⚠️ **เกิดข้อผิดพลาดในการบันทึก**\n\n"
+            else:
+                summary_message_text = "ℹ️ **แสดงข้อมูลสรุป (ยังไม่บันทึก)**\n\n"
+            
             start_date_formatted = datetime.strptime(final_data['start_date'], '%Y-%m-%d').strftime('%d/%m/%Y')
             end_date_formatted = datetime.strptime(final_data['end_date'], '%Y-%m-%d').strftime('%d/%m/%Y')
             
-            summary_message = (
-                "✅ **บันทึกข้อมูลเรียบร้อย**\n\n"
+            summary_message_text += (
                 f"**ประเภท:** {final_data['type']}\n"
                 f"**ชื่อ:** {final_data['name']}\n"
                 f"**ตั้งแต่:** {start_date_formatted}\n"
                 f"**ถึง:** {end_date_formatted}"
             )
             
-            # 4. ส่งข้อความสรุปกลับไป
-            # (ในอนาคต เราจะเพิ่มโค้ดบันทึกลง Firebase ก่อนส่งข้อความนี้)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=summary_message))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=summary_message_text))
             
-            # 5. ล้างสถานะของผู้ใช้คนนี้ออกจากหน่วยความจำ เป็นการจบกระบวนการ
             del user_states[user_id]
             return
-        # ==============================================================================
+        # -----------------------------------------------------
 
-# ส่วนสำหรับรัน Server
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
