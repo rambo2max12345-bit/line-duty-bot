@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
 # ========================================================================================
-# นี่คือไฟล์ Server สำหรับ LINE Bot จัดตารางเวร (เวอร์ชัน 7.1 - แก้ไขข้อผิดพลาด)
-# ย้ายลำดับการเชื่อมต่อ Firebase เพื่อแก้ไข NameError
+# นี่คือไฟล์ Server สำหรับ LINE Bot จัดตารางเวร (เวอร์ชัน 8)
+# เพิ่มความสามารถในการ "ดูข้อมูลการลา" จาก Firebase
 # ========================================================================================
 
 from flask import Flask, request, abort
@@ -31,11 +31,11 @@ CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN', '8Qa3lq+KjkF68P1W6
 CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET', '1d0c51790d0bff2b98dbb98dc8f72663')
 # -------------------------
 
-app = Flask(__name__) # <-- สร้าง app ขึ้นมาก่อน
+app = Flask(__name__)
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# --- ย้ายส่วน import และเชื่อมต่อ Firebase มาไว้ตรงนี้ ---
+# --- ส่วนเชื่อมต่อ Firebase ---
 try:
     firebase_credentials_json_str = os.environ.get('FIREBASE_CREDENTIALS_JSON')
     if firebase_credentials_json_str:
@@ -53,7 +53,7 @@ except Exception as e:
     app.logger.error(f"Firebase connection failed: {e}")
 # -----------------------------------
 
-# --- หน่วยความจำและรายชื่อ (เหมือนเดิม) ---
+# --- หน่วยความจำและรายชื่อ ---
 user_states = {}
 personnel_list = [
     "อส.ทพ.บุญธรรม เขียวเข็ม", "อส.ทพ.ชนะศักดิ์ กาสังข์", "อส.ทพ.สนธยา ปราบณรงค์",
@@ -72,11 +72,12 @@ def callback():
         abort(400)
     return 'OK'
 
-# --- ส่วนจัดการข้อความ (handle_message) - เหมือนเดิม ---
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
     user_message = event.message.text
+
+    # --- ส่วนจัดการ State การสนทนา (เหมือนเดิม) ---
     if user_id in user_states:
         current_step = user_states[user_id]['step']
         if current_step == 'awaiting_leave_type':
@@ -110,11 +111,13 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, reply_message)
             return
 
+    # --- ส่วนจัดการคำสั่งหลัก ---
     if user_message == '#ยกเลิก':
         if user_id in user_states:
             del user_states[user_id]
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ยกเลิกรายการเรียบร้อยแล้วครับ"))
         return
+
     if user_message == '#Bot01':
         quick_reply_buttons = QuickReply(items=[
             QuickReplyButton(action=MessageAction(label="📝 แจ้งลา/ราชการ", text="#แจ้งลา")),
@@ -122,6 +125,7 @@ def handle_message(event):
             QuickReplyButton(action=MessageAction(label="📄 ดูข้อมูลการลา", text="#ดูข้อมูลลา"))
         ])
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="มีอะไรให้รับใช้ครับนายท่าน", quick_reply=quick_reply_buttons))
+
     elif user_message == '#แจ้งลา':
         user_states[user_id] = {'step': 'awaiting_leave_type', 'data': {}}
         leave_type_buttons = QuickReply(items=[
@@ -132,11 +136,61 @@ def handle_message(event):
             QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))
         ])
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="กรุณาเลือกประเภทการลาครับ", quick_reply=leave_type_buttons))
-# ----------------------------------------------
+    
+    # ==============================================================================
+    # ส่วนที่เพิ่มเข้ามาใหม่: จัดการคำสั่ง "#ดูข้อมูลลา"
+    # ==============================================================================
+    elif user_message == '#ดูข้อมูลลา':
+        if not db:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="⚠️ ขออภัยครับ ไม่สามารถเชื่อมต่อกับฐานข้อมูลได้ในขณะนี้")
+            )
+            return
+
+        try:
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            
+            # 1. ค้นหาข้อมูลการลาทั้งหมดที่ "เริ่ม" ก่อนหรือภายในวันนี้
+            docs_query = db.collection('leave_requests').where('start_date', '<=', today_str).stream()
+
+            on_leave_today = []
+            for doc in docs_query:
+                leave_data = doc.to_dict()
+                # 2. กรองข้อมูลเฉพาะรายการที่ "สิ้นสุด" หลังหรือภายในวันนี้
+                if leave_data.get('end_date', '1970-01-01') >= today_str:
+                    on_leave_today.append(leave_data)
+            
+            # 3. สร้างข้อความตอบกลับ
+            if not on_leave_today:
+                reply_text = "✅ ไม่มีกำลังพลลา/ราชการในวันนี้ครับ"
+            else:
+                reply_text = "📄 **สรุปกำลังพลลา/ราชการ วันนี้**\n\n"
+                for leave in on_leave_today:
+                    start_date_formatted = datetime.strptime(leave['start_date'], '%Y-%m-%d').strftime('%d/%m/%Y')
+                    end_date_formatted = datetime.strptime(leave['end_date'], '%Y-%m-%d').strftime('%d/%m/%Y')
+                    reply_text += (
+                        f"**ชื่อ:** {leave['name']}\n"
+                        f"**ประเภท:** {leave['leave_type']}\n"
+                        f"**ช่วงเวลา:** {start_date_formatted} - {end_date_formatted}\n\n"
+                    )
+            
+            # 4. ส่งข้อความกลับไป
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text.strip()))
+
+        except Exception as e:
+            app.logger.error(f"Error fetching from Firestore: {e}")
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="⚠️ เกิดข้อผิดพลาดในการดึงข้อมูลการลา")
+            )
+        return
+    # ==============================================================================
 
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
+    # --- ส่วนนี้เหมือนเดิมทั้งหมด ---
     user_id = event.source.user_id
     postback_data = event.postback.data
 
@@ -197,5 +251,5 @@ def handle_postback(event):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0' , port=port)
 
