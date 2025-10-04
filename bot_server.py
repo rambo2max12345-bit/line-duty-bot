@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # ========================================================================================
-# นี่คือไฟล์ Server สำหรับ LINE Bot จัดตารางเวร (เวอร์ชัน 13 - Final Rich Menu)
+# นี่คือไฟล์ Server สำหรับ LINE Bot จัดตารางเวร (เวอร์ชัน 15 - Full CRUD)
 # ========================================================================================
 
 from flask import Flask, request, abort, send_from_directory
@@ -16,7 +16,8 @@ from linebot.models import (
     QuickReply, QuickReplyButton, MessageAction,
     DatetimePickerAction,
     PostbackEvent,
-    ImageSendMessage
+    ImageSendMessage,
+    TemplateSendMessage, CarouselTemplate, CarouselColumn, PostbackAction
 )
 
 import os
@@ -94,7 +95,7 @@ def handle_message(event):
 
     if user_id in user_states:
         current_step = user_states[user_id]['step']
-        # --- ส่วนจัดการ State การแจ้งลา ---
+        # --- (โค้ดส่วน State จัดการแจ้งลาและจัดเวร เหมือนเดิม) ---
         if current_step == 'awaiting_leave_type':
             leave_type = user_message
             if leave_type == '#ยกเลิก':
@@ -103,9 +104,7 @@ def handle_message(event):
                 return
             user_states[user_id]['data']['type'] = leave_type
             user_states[user_id]['step'] = 'awaiting_name'
-            name_buttons = [QuickReplyButton(action=MessageAction(label=name[:20], text=name)) for name in personnel_list]
-            name_buttons.append(QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก")))
-            reply_message = TextSendMessage(text="กรุณาเลือกกำลังพลที่ต้องการแจ้งลาครับ", quick_reply=QuickReply(items=name_buttons))
+            reply_message = TextSendMessage(text="กรุณาพิมพ์ชื่อ-สกุล ของกำลังพลที่ต้องการแจ้งลาครับ\n\n(หากต้องการยกเลิก พิมพ์ #ยกเลิก)")
             line_bot_api.reply_message(event.reply_token, reply_message)
             return
         elif current_step == 'awaiting_name':
@@ -114,100 +113,77 @@ def handle_message(event):
                 del user_states[user_id]
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ยกเลิกรายการเรียบร้อยแล้วครับ"))
                 return
+            if selected_name not in personnel_list:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"⚠️ ไม่พบชื่อ '{selected_name}' ในระบบ กรุณาลองใหม่อีกครั้งครับ"))
+                return
             user_states[user_id]['data']['name'] = selected_name
             user_states[user_id]['step'] = 'awaiting_start_date'
             today = datetime.now().strftime('%Y-%m-%d')
-            date_picker_start = QuickReply(items=[
-                QuickReplyButton(action=DatetimePickerAction(label="เลือกวันเริ่มต้น", data="action=select_start_date", mode="date", initial=today, min=today)),
-                QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))
-            ])
+            date_picker_start = QuickReply(items=[QuickReplyButton(action=DatetimePickerAction(label="เลือกวันเริ่มต้น", data="action=select_start_date", mode="date", initial=today, min=today)), QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))])
             reply_message = TextSendMessage(text="กรุณาเลือกวันที่เริ่มต้นลาครับ", quick_reply=date_picker_start)
             line_bot_api.reply_message(event.reply_token, reply_message)
             return
-        # --- ส่วนจัดการ State การจัดเวร ---
         elif current_step == 'awaiting_sergeant':
             sergeant_name = user_message
             if sergeant_name == '#ยกเลิก':
                 del user_states[user_id]
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ยกเลิกการจัดเวรเรียบร้อยแล้วครับ"))
                 return
-            
+            if sergeant_name not in personnel_list:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"⚠️ ไม่พบชื่อ '{sergeant_name}' ในระบบ กรุณาลองใหม่อีกครั้งครับ"))
+                return
             user_states[user_id]['data']['sergeant'] = sergeant_name
             user_states[user_id]['step'] = 'awaiting_shift_number'
-
-            shift_buttons = QuickReply(items=[
-                QuickReplyButton(action=MessageAction(label="ผลัด 1", text="ผลัด 1")),
-                QuickReplyButton(action=MessageAction(label="ผลัดอื่น", text="ผลัดอื่น")),
-                QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))
-            ])
-            reply_message = TextSendMessage(
-                text="ปัจจุบันผลัดที่เท่าไหร่ครับ",
-                quick_reply=shift_buttons
-            )
+            shift_buttons = QuickReply(items=[QuickReplyButton(action=MessageAction(label="ผลัด 1", text="ผลัด 1")), QuickReplyButton(action=MessageAction(label="ผลัดอื่น", text="ผลัดอื่น")), QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))])
+            reply_message = TextSendMessage(text="ปัจจุบันผลัดที่เท่าไหร่ครับ", quick_reply=shift_buttons)
             line_bot_api.reply_message(event.reply_token, reply_message)
             return
-
         elif current_step == 'awaiting_shift_number':
+            # ... (โค้ดส่วนจัดเวรเหมือนเดิม)
             shift_choice = user_message
             if shift_choice == '#ยกเลิก':
                 del user_states[user_id]
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ยกเลิกการจัดเวรเรียบร้อยแล้วครับ"))
                 return
-            
             sergeant_name = user_states[user_id]['data']['sergeant']
-
             try:
                 today_str = datetime.now().strftime('%Y-%m-%d')
                 docs_query = db.collection('leave_requests').where('start_date', '<=', today_str).stream()
                 on_leave_names = [doc.to_dict()['name'] for doc in docs_query if doc.to_dict().get('end_date', '1970-01-01') >= today_str]
                 available_personnel = [p for p in personnel_list if p not in on_leave_names]
-                
                 today_weekday = datetime.now().weekday()
                 barber_name = "อส.ทพ.โกวิทย์ ทองขาวบัว"
-                barber_duty_days = [1, 3, 5]
-                barber_excluded = False
+                barber_duty_days = [1, 3, 5]; barber_excluded = False
                 if today_weekday in barber_duty_days and barber_name in available_personnel:
-                    available_personnel.remove(barber_name)
-                    barber_excluded = True
-
+                    available_personnel.remove(barber_name); barber_excluded = True
                 suesan_name = "อส.ทพ.สื่อสาร นะครับ"
                 suesan_excluded = False
                 if shift_choice != "ผลัด 1" and suesan_name in available_personnel:
-                    available_personnel.remove(suesan_name)
-                    suesan_excluded = True
-                
+                    available_personnel.remove(suesan_name); suesan_excluded = True
                 if sergeant_name not in available_personnel:
                     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"⚠️ ขออภัยครับ {sergeant_name} ติดภารกิจ"))
-                    del user_states[user_id]
-                    return
-
+                    del user_states[user_id]; return
                 duty_personnel_ordered = [sergeant_name]
                 start_index = personnel_list.index(sergeant_name) + 1
                 rotated_master_list = personnel_list[start_index:] + personnel_list[:start_index]
                 for person in rotated_master_list:
                     if person in available_personnel and person != sergeant_name:
                         duty_personnel_ordered.append(person)
-                
                 if not Image: raise ImportError("Pillow library is not installed.")
                 width, height = 800, 1000
                 bg_color, font_color, header_color = (240, 240, 240), (50, 50, 50), (0, 0, 0)
                 font_path = "Sarabun-Regular.ttf"
-
-                try:
-                    header_font, body_font, small_font = ImageFont.truetype(font_path, 40), ImageFont.truetype(font_path, 28), ImageFont.truetype(font_path, 20)
+                try: header_font, body_font, small_font = ImageFont.truetype(font_path, 40), ImageFont.truetype(font_path, 28), ImageFont.truetype(font_path, 20)
                 except IOError:
                     line_bot_api.reply_message(event.reply_token, TextSendMessage(text="⚠️เกิดข้อผิดพลาด: ไม่พบไฟล์ฟอนต์ Sarabun-Regular.ttf"))
-                    del user_states[user_id]
-                    return
-
+                    del user_states[user_id]; return
                 image = Image.new('RGB', (width, height), bg_color)
                 draw = ImageDraw.Draw(image)
                 today_thai = datetime.now().strftime('%d/%m/%Y')
                 draw.text((40, 30), f"ตารางเวรประจำวันที่ {today_thai}", font=header_font, fill=header_color)
                 draw.line([(40, 90), (width - 40, 90)], fill=(200, 200, 200), width=2)
                 y_pos = 110
-                if not duty_personnel_ordered:
-                    draw.text((40, y_pos), "ไม่มีกำลังพลสำหรับจัดเวร", font=body_font, fill=(255, 0, 0))
+                if not duty_personnel_ordered: draw.text((40, y_pos), "ไม่มีกำลังพลสำหรับจัดเวร", font=body_font, fill=(255, 0, 0))
                 else:
                     start_time = datetime.strptime("18:00", "%H:%M")
                     minutes_per_person = (12 * 60) / len(duty_personnel_ordered)
@@ -220,16 +196,10 @@ def handle_message(event):
                         draw.text((60, y_pos), f"{i}. {time_slot}:  {person}", font=body_font, fill=font_color)
                         y_pos += 45
                         current_time = end_time
-                
                 y_pos_note = y_pos + 20
-                if barber_excluded:
-                    draw.text((40, y_pos_note), f"*หมายเหตุ: {barber_name} งดเข้าเวร (ช่างตัดผม)", font=small_font, fill=font_color)
-                    y_pos_note += 25
-                if suesan_excluded:
-                    draw.text((40, y_pos_note), f"*หมายเหตุ: {suesan_name} ไม่มีเวร (ไม่ใช่ผลัด 1)", font=small_font, fill=font_color)
-
-                temp_dir = '/tmp/line_bot_images'
-                os.makedirs(temp_dir, exist_ok=True)
+                if barber_excluded: draw.text((40, y_pos_note), f"*หมายเหตุ: {barber_name} งดเข้าเวร (ช่างตัดผม)", font=small_font, fill=font_color); y_pos_note += 25
+                if suesan_excluded: draw.text((40, y_pos_note), f"*หมายเหตุ: {suesan_name} ไม่มีเวร (ไม่ใช่ผลัด 1)", font=small_font, fill=font_color)
+                temp_dir = '/tmp/line_bot_images'; os.makedirs(temp_dir, exist_ok=True)
                 unique_filename = f"{uuid.uuid4()}.png"
                 image_path = os.path.join(temp_dir, unique_filename)
                 image.save(image_path)
@@ -242,6 +212,7 @@ def handle_message(event):
             finally:
                 if user_id in user_states: del user_states[user_id]
             return
+
     
     # --- ส่วนจัดการคำสั่งจาก Rich Menu ---
     if user_message == '#แจ้งลา':
@@ -251,21 +222,17 @@ def handle_message(event):
     
     elif user_message == '#จัดเวร':
         user_states[user_id] = {'step': 'awaiting_sergeant', 'data': {}}
-        sergeant_buttons = [QuickReplyButton(action=MessageAction(label=name[:20], text=name)) for name in personnel_list]
-        sergeant_buttons.append(QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก")))
-        reply_message = TextSendMessage(text="กรุณาเลือกกำลังพลที่จะทำหน้าที่ 'สิบเวรโรงรถ' (ผลัดที่ 1) ครับ", quick_reply=QuickReply(items=sergeant_buttons))
+        reply_message = TextSendMessage(text="กรุณาพิมพ์ชื่อ-สกุล ของผู้ที่จะทำหน้าที่ 'สิบเวรโรงรถ' (ผลัดที่ 1) ครับ\n\n(หากต้องการยกเลิก พิมพ์ #ยกเลิก)")
         line_bot_api.reply_message(event.reply_token, reply_message)
     
     elif user_message == '#ดูข้อมูลลาวันนี้':
-        if not db: 
-            line_bot_api.reply_message(event.reply_token,TextSendMessage(text="⚠️ ไม่สามารถเชื่อมต่อฐานข้อมูลได้"))
-            return
+        # ... (โค้ดส่วนนี้เหมือนเดิม)
+        if not db: line_bot_api.reply_message(event.reply_token,TextSendMessage(text="⚠️ ไม่สามารถเชื่อมต่อฐานข้อมูลได้")); return
         try:
             today_str=datetime.now().strftime('%Y-%m-%d')
             docs_query=db.collection('leave_requests').where('start_date','<=',today_str).stream()
             on_leave_today=[doc.to_dict() for doc in docs_query if doc.to_dict().get('end_date','1970-01-01')>=today_str]
-            if not on_leave_today: 
-                reply_text="✅ ไม่มีกำลังพลลา/ราชการในวันนี้ครับ"
+            if not on_leave_today: reply_text="✅ ไม่มีกำลังพลลา/ราชการในวันนี้ครับ"
             else:
                 reply_text="📄 **สรุปกำลังพลลา/ราชการ วันนี้**\n\n"
                 for leave in on_leave_today:
@@ -279,23 +246,52 @@ def handle_message(event):
 
     elif user_message == '#ดูข้อมูลลาทั้งหมด':
         if not db: 
-            line_bot_api.reply_message(event.reply_token,TextSendMessage(text="⚠️ ไม่สามารถเชื่อมต่อฐานข้อมูลได้"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="⚠️ ไม่สามารถเชื่อมต่อฐานข้อมูลได้"))
             return
         try:
-            docs = db.collection('leave_requests').order_by('start_date', direction=firestore.Query.DESCENDING).limit(20).stream()
-            all_leaves = [doc.to_dict() for doc in docs]
-            if not all_leaves: 
-                reply_text="ℹ️ ยังไม่มีข้อมูลการลาในระบบครับ"
-            else:
-                reply_text="📑 **ข้อมูลการลาทั้งหมด (20 รายการล่าสุด)**\n\n"
-                for leave in all_leaves:
-                    start_date_formatted=datetime.strptime(leave['start_date'],'%Y-%m-%d').strftime('%d/%m/%Y')
-                    end_date_formatted=datetime.strptime(leave['end_date'],'%Y-%m-%d').strftime('%d/%m/%Y')
-                    reply_text+=f"• {leave['name']} ({leave['leave_type']})\n  {start_date_formatted} - {end_date_formatted}\n\n"
-            line_bot_api.reply_message(event.reply_token,TextSendMessage(text=reply_text.strip()))
+            # ดึงข้อมูล 10 รายการล่าสุด
+            docs = db.collection('leave_requests').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(10).stream()
+            columns = []
+            for doc in docs:
+                leave_data = doc.to_dict()
+                doc_id = doc.id # <-- ดึง ID ของเอกสาร
+                start_date_f = datetime.strptime(leave_data['start_date'], '%Y-%m-%d').strftime('%d/%m/%y')
+                end_date_f = datetime.strptime(leave_data['end_date'], '%Y-%m-%d').strftime('%d/%m/%y')
+                
+                text_summary = (
+                    f"ประเภท: {leave_data['leave_type']}\n"
+                    f"วันที่: {start_date_f} - {end_date_f}"
+                )
+                
+                # สร้างการ์ด Carousel สำหรับแต่ละรายการ
+                column = CarouselColumn(
+                    title=leave_data['name'],
+                    text=text_summary,
+                    actions=[
+                        # ปุ่มจัดการจะส่ง Postback พร้อม doc_id กลับมา
+                        PostbackAction(
+                            label='จัดการรายการนี้',
+                            data=f'action=manage&doc_id={doc_id}'
+                        )
+                    ]
+                )
+                columns.append(column)
+
+            if not columns:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ℹ️ ยังไม่มีข้อมูลการลาในระบบครับ"))
+                return
+            
+            # สร้างและส่ง Carousel Template
+            carousel_template = CarouselTemplate(columns=columns)
+            template_message = TemplateSendMessage(
+                alt_text='ข้อมูลการลาล่าสุด',
+                template=carousel_template
+            )
+            line_bot_api.reply_message(event.reply_token, template_message)
+
         except Exception as e:
-            app.logger.error(f"Error fetching all leaves: {e}")
-            line_bot_api.reply_message(event.reply_token,TextSendMessage(text="⚠️ เกิดข้อผิดพลาดในการดึงข้อมูลทั้งหมด"))
+            app.logger.error(f"Error creating carousel: {e}")
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="⚠️ เกิดข้อผิดพลาดในการสร้างรายการข้อมูล"))
 
     elif user_message == '#รีเซ็ต':
         if user_id in user_states:
@@ -307,17 +303,24 @@ def handle_message(event):
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
-    user_id=event.source.user_id
+    user_id = event.source.user_id
+    postback_data_str = event.postback.data
+    
+    # แยกส่วนของ data string
+    params = dict(x.split('=') for x in postback_data_str.split('&'))
+    action = params.get('action')
+
     if user_id in user_states:
-        current_step=user_states[user_id]['step']
-        if current_step=='awaiting_start_date' and event.postback.data=='action=select_start_date':
+        current_step = user_states[user_id]['step']
+        # --- ส่วนจัดการ Postback ของการแจ้งลา ---
+        if current_step == 'awaiting_start_date' and action == 'select_start_date':
             selected_date=event.postback.params['date']
             user_states[user_id]['data']['start_date']=selected_date
             user_states[user_id]['step']='awaiting_end_date'
             date_picker_end=QuickReply(items=[QuickReplyButton(action=DatetimePickerAction(label="เลือกวันสิ้นสุด",data="action=select_end_date",mode="date",initial=selected_date,min=selected_date)),QuickReplyButton(action=MessageAction(label="❌ ยกเลิก",text="#ยกเลิก"))])
             line_bot_api.reply_message(event.reply_token,TextSendMessage(text="กรุณาเลือกวันสิ้นสุดการลาครับ",quick_reply=date_picker_end))
             return
-        elif current_step=='awaiting_end_date' and event.postback.data=='action=select_end_date':
+        elif current_step == 'awaiting_end_date' and action == 'select_end_date':
             selected_end_date=event.postback.params['date']
             user_states[user_id]['data']['end_date']=selected_end_date
             final_data=user_states[user_id]['data']
@@ -337,7 +340,49 @@ def handle_postback(event):
             line_bot_api.reply_message(event.reply_token,TextSendMessage(text=summary_message_text))
             del user_states[user_id]
             return
+        
+    # --- ส่วนจัดการ Postback ใหม่สำหรับ CRUD ---
+    if action == 'manage':
+        doc_id = params.get('doc_id')
+        user_states[user_id] = {'step': 'awaiting_management_choice', 'doc_id': doc_id}
+        
+        # ส่ง Quick Reply ให้เลือกว่าจะแก้ไขหรือลบ
+        management_buttons = QuickReply(items=[
+            QuickReplyButton(action=PostbackAction(label="✏️ แก้ไข", data=f"action=edit&doc_id={doc_id}")),
+            QuickReplyButton(action=PostbackAction(label="🗑️ ลบ", data=f"action=delete&doc_id={doc_id}")),
+            QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))
+        ])
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="กรุณาเลือกการกระทำสำหรับรายการนี้:", quick_reply=management_buttons))
+
+    elif action == 'delete':
+        doc_id = params.get('doc_id')
+        user_states[user_id] = {'step': 'awaiting_delete_confirmation', 'doc_id': doc_id}
+        
+        # ส่ง Quick Reply เพื่อยืนยันการลบ
+        confirm_buttons = QuickReply(items=[
+            QuickReplyButton(action=PostbackAction(label="✅ ยืนยันการลบ", data=f"action=confirm_delete&doc_id={doc_id}")),
+            QuickReplyButton(action=MessageAction(label="❌ ไม่, ยกเลิก", text="#ยกเลิก"))
+        ])
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="คุณแน่ใจหรือไม่ที่จะลบรายการนี้? การกระทำนี้ไม่สามารถย้อนกลับได้", quick_reply=confirm_buttons))
+
+    elif action == 'confirm_delete':
+        doc_id = params.get('doc_id')
+        try:
+            db.collection('leave_requests').document(doc_id).delete()
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="✅ รายการถูกลบออกจากระบบเรียบร้อยแล้ว"))
+        except Exception as e:
+            app.logger.error(f"Error deleting document {doc_id}: {e}")
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="⚠️ เกิดข้อผิดพลาดในการลบข้อมูล"))
+        finally:
+            if user_id in user_states: del user_states[user_id]
+    
+    elif action == 'edit':
+        # (ส่วนของการแก้ไขจะซับซ้อน จะเพิ่มเติมในอนาคต)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🛠️ ขออภัยครับ ฟังก์ชัน 'แก้ไข' กำลังอยู่ระหว่างการพัฒนาครับ"))
+        if user_id in user_states: del user_states[user_id]
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
+
