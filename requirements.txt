@@ -1,6 +1,5 @@
 flask
 line-bot-sdk
-personnel_list
 gunicorn
 firebase-admin
 Pillow
