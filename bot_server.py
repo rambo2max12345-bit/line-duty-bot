@@ -131,11 +131,37 @@ def handle_message(event):
                 del user_states[user_id]
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ยกเลิกการจัดเวรเรียบร้อยแล้วครับ"))
                 return
+            
+            user_states[user_id]['data']['sergeant'] = sergeant_name
+            user_states[user_id]['step'] = 'awaiting_shift_number'
+
+            shift_buttons = QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="ผลัด 1", text="ผลัด 1")),
+                QuickReplyButton(action=MessageAction(label="ผลัดอื่น", text="ผลัดอื่น")),
+                QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))
+            ])
+            reply_message = TextSendMessage(
+                text="ปัจจุบันผลัดที่เท่าไหร่ครับ",
+                quick_reply=shift_buttons
+            )
+            line_bot_api.reply_message(event.reply_token, reply_message)
+            return
+
+        elif current_step == 'awaiting_shift_number':
+            shift_choice = user_message
+            if shift_choice == '#ยกเลิก':
+                del user_states[user_id]
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="ยกเลิกการจัดเวรเรียบร้อยแล้วครับ"))
+                return
+            
+            sergeant_name = user_states[user_id]['data']['sergeant']
+
             try:
                 today_str = datetime.now().strftime('%Y-%m-%d')
                 docs_query = db.collection('leave_requests').where('start_date', '<=', today_str).stream()
                 on_leave_names = [doc.to_dict()['name'] for doc in docs_query if doc.to_dict().get('end_date', '1970-01-01') >= today_str]
                 available_personnel = [p for p in personnel_list if p not in on_leave_names]
+                
                 today_weekday = datetime.now().weekday()
                 barber_name = "อส.ทพ.โกวิทย์ ทองขาวบัว"
                 barber_duty_days = [1, 3, 5]
@@ -143,11 +169,18 @@ def handle_message(event):
                 if today_weekday in barber_duty_days and barber_name in available_personnel:
                     available_personnel.remove(barber_name)
                     barber_excluded = True
+
+                suesan_name = "อส.ทพ.สื่อสาร นะครับ"
+                suesan_excluded = False
+                if shift_choice != "ผลัด 1" and suesan_name in available_personnel:
+                    available_personnel.remove(suesan_name)
+                    suesan_excluded = True
                 
                 if sergeant_name not in available_personnel:
                     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"⚠️ ขออภัยครับ {sergeant_name} ติดภารกิจ"))
                     del user_states[user_id]
                     return
+
                 duty_personnel_ordered = [sergeant_name]
                 start_index = personnel_list.index(sergeant_name) + 1
                 rotated_master_list = personnel_list[start_index:] + personnel_list[:start_index]
@@ -187,8 +220,13 @@ def handle_message(event):
                         draw.text((60, y_pos), f"{i}. {time_slot}:  {person}", font=body_font, fill=font_color)
                         y_pos += 45
                         current_time = end_time
+                
+                y_pos_note = y_pos + 20
                 if barber_excluded:
-                    draw.text((40, y_pos + 20), f"*หมายเหตุ: {barber_name} งดเข้าเวร (ช่างตัดผม)", font=small_font, fill=font_color)
+                    draw.text((40, y_pos_note), f"*หมายเหตุ: {barber_name} งดเข้าเวร (ช่างตัดผม)", font=small_font, fill=font_color)
+                    y_pos_note += 25
+                if suesan_excluded:
+                    draw.text((40, y_pos_note), f"*หมายเหตุ: {suesan_name} ไม่มีเวร (ไม่ใช่ผลัด 1)", font=small_font, fill=font_color)
 
                 temp_dir = '/tmp/line_bot_images'
                 os.makedirs(temp_dir, exist_ok=True)
@@ -212,7 +250,7 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="กรุณาเลือกประเภทการลาครับ", quick_reply=leave_type_buttons))
     
     elif user_message == '#จัดเวร':
-        user_states[user_id] = {'step': 'awaiting_sergeant'}
+        user_states[user_id] = {'step': 'awaiting_sergeant', 'data': {}}
         sergeant_buttons = [QuickReplyButton(action=MessageAction(label=name[:20], text=name)) for name in personnel_list]
         sergeant_buttons.append(QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก")))
         reply_message = TextSendMessage(text="กรุณาเลือกกำลังพลที่จะทำหน้าที่ 'สิบเวรโรงรถ' (ผลัดที่ 1) ครับ", quick_reply=QuickReply(items=sergeant_buttons))
@@ -303,4 +341,3 @@ def handle_postback(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
-
