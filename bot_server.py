@@ -1,10 +1,5 @@
 # -*- coding: utf-8 -*-
 
-# ========================================================================================
-# LINE Bot จัดตารางเวร (เวอร์ชัน 13 - Final Rich Menu)
-# ปรับปรุงให้ใช้ .env สำหรับ Access Token / Secret / Firebase
-# ========================================================================================
-
 from flask import Flask, request, abort, send_from_directory
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -23,7 +18,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 from dotenv import load_dotenv
-load_dotenv()  # อ่านตัวแปรจาก .env
+load_dotenv()  # สำหรับรันทดสอบบนเครื่องตัวเอง (Local)
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -32,13 +27,21 @@ except ImportError:
     ImageDraw = None
     ImageFont = None
 
-# --- ตั้งค่า LINE ---
-CHANNEL_ACCESS_TOKEN = os.getenv("8Qa3lq+KjkF68P1W6xAkkuRyoXpz9YyuQI2nOKJRu/ndsvfGLZIft6ltdgYV8vMEbBkz5AWzYoF+CaS7u0OShmuZvo5Yufb6+Xvr4gBti4Gc4cp45MCnyD0cte94vZyyEhLKC3WJKvd9usUXqCwrOgdB04t89/1O/w1cDnyilFU=")
-CHANNEL_SECRET = os.getenv("1d0c51790d0bff2b98dbb98dc8f72663")
+# --- ตั้งค่า LINE (แก้ไขแล้ว) ---
+CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
+CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 
 app = Flask(__name__)
-line_bot_api = LineBotApi(8Qa3lq+KjkF68P1W6xAkkuRyoXpz9YyuQI2nOKJRu/ndsvfGLZIft6ltdgYV8vMEbBkz5AWzYoF+CaS7u0OShmuZvo5Yufb6+Xvr4gBti4Gc4cp45MCnyD0cte94vZyyEhLKC3WJKvd9usUXqCwrOgdB04t89/1O/w1cDnyilFU=)
-handler = WebhookHandler(1d0c51790d0bff2b98dbb98dc8f72663)
+
+# ตรวจสอบว่ามี Token หรือไม่ก่อนสร้าง instance
+if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
+    app.logger.error("CHANNEL_ACCESS_TOKEN and CHANNEL_SECRET must be set as environment variables.")
+    # ใน Production อาจจะ exit หรือจัดการ error อื่นๆ
+    line_bot_api = None
+    handler = None
+else:
+    line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
+    handler = WebhookHandler(CHANNEL_SECRET)
 
 # --- เชื่อม Firebase ---
 try:
@@ -71,11 +74,16 @@ personnel_list = [
 @app.route("/images/<filename>")
 def serve_image(filename):
     image_dir = '/tmp/line_bot_images'
+    # สร้าง directory ถ้ายังไม่มี
+    if not os.path.exists(image_dir):
+        os.makedirs(image_dir)
     return send_from_directory(image_dir, filename)
 
 # --- Webhook ---
 @app.route("/webhook", methods=['POST'])
 def callback():
+    if not handler:
+        abort(500) # Server is misconfigured
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
     app.logger.info("Request body: " + body)
@@ -88,7 +96,9 @@ def callback():
 # --- Message Event Handler ---
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    from linebot.models import TextSendMessage
+    if not line_bot_api:
+        return # ไม่ทำงานถ้า line_bot_api ไม่ถูกสร้าง
+        
     user_id = event.source.user_id
     user_message = event.message.text
 
@@ -96,8 +106,7 @@ def handle_message(event):
     if user_id in user_states:
         current_step = user_states[user_id]['step']
         if current_step.startswith("awaiting"):
-            # ตัวอย่างการจัดการลำดับขั้นต่าง ๆ
-            pass  # ใส่โค้ดเดิมของคุณตรงนี้
+            pass
     else:
         # --- คำสั่ง Rich Menu ---
         if user_message == "#แจ้งลา":
@@ -118,11 +127,9 @@ def handle_message(event):
 # --- Postback Event Handler ---
 @handler.add(PostbackEvent)
 def handle_postback(event):
-    pass  # ใส่โค้ดเดิมของคุณตรงนี้
+    pass
 
 # --- Run Server ---
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
-
