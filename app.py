@@ -1,24 +1,20 @@
-# app.py - ฉบับปรับปรุงสำหรับ Developer และ Render Deployment
-
+# app.py - ฉบับสมบูรณ์สำหรับ Developer และ Render Deployment
 import os
 import json
-import datetime
 import uuid
-from flask import Flask, request, abort, url_for, send_file, send_from_directory
+from flask import Flask, request, abort, url_for, send_from_directory
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
     MessageEvent, PostbackEvent, TextMessage, TextSendMessage, TemplateSendMessage,
     CarouselTemplate, CarouselColumn, PostbackAction, QuickReply, QuickReplyButton,
-    DatetimePickerAction, ImageSendMessage, MessageAction, FlexSendMessage
+    DatetimePickerAction, ImageSendMessage, MessageAction
 )
 from firebase_admin import credentials, initialize_app, firestore
 from google.cloud.firestore import FieldFilter
-from datetime import datetime, timedelta
-
+from datetime import datetime, timedelta, date
 # --- Configuration and Initialization ---
-
-# Environment variables
+# Environment variables (ต้องตั้งค่าใน Render)
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 FIREBASE_CREDENTIALS_JSON = os.getenv("FIREBASE_CREDENTIALS_JSON")
@@ -26,10 +22,9 @@ FIREBASE_CREDENTIALS_JSON = os.getenv("FIREBASE_CREDENTIALS_JSON")
 app = Flask(__name__)
 
 # 🌟 Admin Configuration 🌟
-# ต้องแทนที่ 'U466123' ด้วย LINE User ID จริงของผู้ดูแล
 ADMIN_LINE_ID = os.getenv("ADMIN_LINE_ID", "max466123") 
 
-# LINE API setup - Initialize safely
+# LINE API setup
 line_bot_api = None
 handler = None
 if CHANNEL_ACCESS_TOKEN and CHANNEL_SECRET:
@@ -38,15 +33,17 @@ if CHANNEL_ACCESS_TOKEN and CHANNEL_SECRET:
 else:
     app.logger.error("FATAL: LINE credentials not set. Webhook will fail.")
 
-# Firebase setup - Initialize safely
+# Firebase setup
 db = None
 try:
     if FIREBASE_CREDENTIALS_JSON:
         cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
         cred = credentials.Certificate(cred_dict)
-        # ตรวจสอบเพื่อไม่ให้ initialize ซ้ำเมื่อ Gunicorn Fork Process
+        
+        # ป้องกัน initialize ซ้ำเมื่อ Gunicorn Fork Process
         if not firestore._apps:
             initialize_app(cred)
+            
         db = firestore.client()
         app.logger.info("Firebase connected successfully.")
     else:
@@ -54,7 +51,7 @@ try:
 except Exception as e:
     app.logger.error(f"FATAL: Error initializing Firebase: {e}")
 
-# Image setup (Requires Pillow and a Thai font, e.g., 'arial.ttf' in the root)
+# Image setup (Requires Pillow and a Thai font)
 try:
     from PIL import Image, ImageDraw, ImageFont
     IMAGE_DIR = "/tmp/line_bot_images"
@@ -68,15 +65,44 @@ except ImportError:
 # Constants
 PERSONNEL_COLLECTION = "personnel"
 DUTY_COLLECTION = "duty_rotation"
-LEAVE_COLLECTION = "line_duty_leave" # Collection for pending/approved leaves
+LEAVE_COLLECTION = "line_duty_leave" 
+SESSION_COLLECTION = "user_sessions" # ใช้สำหรับเก็บสถานะแทน user_states = {}
 LEAVE_TYPES = ["ลาพัก", "ลากิจ", "ลาป่วย", "ราชการ"]
 
-# ⚠️ STATE MANAGEMENT WARNING: This will NOT work reliably on Render due to stateless workers.
-# For production, use Firestore to manage state (user_states Collection).
-user_states = {} 
+# --- UTILITY & DATA FUNCTIONS (State Management) ---
+def get_session_state(user_id):
+    """Retrieves the user's current session state from Firestore."""
+    if not db: return None
+    try:
+        doc = db.collection(SESSION_COLLECTION).document(user_id).get()
+        return doc.to_dict() if doc.exists else None
+    except Exception as e:
+        app.logger.error(f"Error fetching session for {user_id}: {e}")
+        return None
 
-# --- UTILITY & DATA FUNCTIONS ---
+def save_session_state(user_id, step, data):
+    """Saves the user's current session state to Firestore."""
+    if not db: return False
+    try:
+        db.collection(SESSION_COLLECTION).document(user_id).set({
+            "step": step,
+            "data": data,
+            "timestamp": firestore.SERVER_TIMESTAMP
+        })
+        return True
+    except Exception as e:
+        app.logger.error(f"Error saving session for {user_id}: {e}")
+        return False
 
+def clear_session_state(user_id):
+    """Clears the user's session state from Firestore."""
+    if not db: return
+    try:
+        db.collection(SESSION_COLLECTION).document(user_id).delete()
+    except Exception as e:
+        app.logger.error(f"Error clearing session for {user_id}: {e}")
+
+# --- UTILITY & DATA FUNCTIONS (General) ---
 def is_admin(user_id):
     """Checks if the user ID is the configured admin ID."""
     return user_id == ADMIN_LINE_ID
@@ -102,24 +128,14 @@ def get_personnel_data():
         app.logger.error(f"Error fetching personnel data: {e}")
         return []
 
-def get_user_name(line_id):
-    """Finds user name from line_id using Firestore."""
-    personnel = get_personnel_data()
-    for p in personnel:
-        if p.get("line_id") == line_id:
-            return p.get("name")
-    return None
-
 def get_duty_by_date(date_str):
     """Calculates duty assignment for a given date using Firestore data."""
     personnel = get_personnel_data()
     if not personnel or not db: return None
-
     try:
         date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
         return None
-
     duty_defs = []
     try:
         # ดึงรูปแบบเวรจาก Firestore
@@ -128,14 +144,12 @@ def get_duty_by_date(date_str):
     except Exception as e:
         app.logger.error(f"Error fetching duty rotation data: {e}")
         return None
-
     if not duty_defs: return None
-
     personnel.sort(key=lambda x: x.get("duty_priority", 999))
     num_personnel = len(personnel)
     
     # Rotation Logic (Assuming reference date is 2024-01-01)
-    reference_date = datetime.date(2024, 1, 1)
+    reference_date = date(2024, 1, 1)
     day_diff = (date_obj - reference_date).days
     
     duty_assignments = []
@@ -152,10 +166,7 @@ def get_duty_by_date(date_str):
 
 def save_leave_to_firestore(line_id, data):
     """Saves the final leave request data to Firestore."""
-    if not db:
-        app.logger.error("Firestore client is not available.")
-        return False
-
+    if not db: return False
     try:
         doc_ref = db.collection(LEAVE_COLLECTION).document()
         data.update({
@@ -166,7 +177,6 @@ def save_leave_to_firestore(line_id, data):
             "submission_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         })
         doc_ref.set(data)
-        app.logger.info(f"Leave record saved: {data['doc_id']}")
         return True
     except Exception as e:
         app.logger.error(f"Error saving leave to Firestore: {e}")
@@ -178,12 +188,13 @@ def generate_summary_image(data):
         return None, None
         
     try:
-        # Generate image logic (as provided in your merged code)
         image_dir = IMAGE_DIR
         filename = f"leave_summary_{uuid.uuid4().hex[:8]}.png"
         filepath = os.path.join(image_dir, filename)
-        image_url = url_for('serve_image', filename=filename, _external=True)
-
+        
+        # ⚠️ ต้องแน่ใจว่า Render service มีการตั้งค่า "External URL" ที่ถูกต้อง
+        image_url = url_for('serve_image', filename=filename, _external=True) 
+        
         width, height = 650, 480
         img = Image.new('RGB', (width, height), color = '#F0F4F8') 
         d = ImageDraw.Draw(img)
@@ -191,11 +202,12 @@ def generate_summary_image(data):
         font_title = _get_font(36)
         font_header = _get_font(24)
         font_body = _get_font(20)
-
+        
         d.rectangle((20, 20, width - 20, height - 20), fill='#FFFFFF', outline='#007BFF', width=3)
         title_text = "ใบแจ้งลาอิเล็กทรอนิกส์"
-        d.text((width/2, 40), title_text, fill=(25, 25, 112), font=font_title, anchor="mt")
-
+        # ใช้ d.text() กับ anchor="mt" ได้ถ้าใช้ PIL เวอร์ชันใหม่ (>= 9.2.0)
+        d.text((width/2, 40), title_text, fill=(25, 25, 112), font=font_title, anchor="mt") 
+        
         lines = [
             ("ประเภทการลา:", data['leave_type']),
             ("ชื่อผู้ลา:", data['personnel_name']),
@@ -219,35 +231,32 @@ def generate_summary_image(data):
         app.logger.error(f"Image generation failed: {e}")
         return None, None
 
-def create_duty_image(date_str, assignments):
-    # Implementation for duty image generation (similar to generate_summary_image)
-    if Image is None or not assignments:
-        return None
-
-    # Logic to create and save duty image
-    # ... (Omitted for brevity, but this would contain the PIL logic for duty image)
-    
-    return f"duty_{date_str}.png" # Return filename
+def send_duty_message(reply_token, date_str, assignments):
+    """Sends a summary of duty assignments."""
+    if not assignments:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"ไม่พบข้อมูลเวรสำหรับวันที่ {date_str}"))
+        return
+        
+    summary = f"🗓️ **เวรประจำวันที่ {date_str}**\n\n"
+    for item in assignments:
+        summary += f"▶️ {item['duty']}: **{item['name']}**\n"
+        
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=summary))
 
 # --- ADMIN HANDLERS ---
-
 def handle_admin_command(event, text):
     """Handles commands exclusively for the admin."""
-    # ... (Same logic as previous version) ...
     command = text.lower().split()
     reply_token = event.reply_token
-
+    
     if len(command) == 1 or command[1] == "help":
         help_text = (
             "🛠️ **Admin Commands**\n"
             "• `admin leave` : ดูรายการลาที่รอการอนุมัติ\n"
-            "• **การจัดการข้อมูลกำลังพลและเวร (CRUD):**\n"
-            "   *ต้องทำผ่าน Firebase Console โดยตรง ณ ตอนนี้*\n"
-            "   (Collection: `personnel`, `duty_rotation`)"
+            "• (การจัดการข้อมูลกำลังพลและเวรทำผ่าน Firebase Console)"
         )
         line_bot_api.reply_message(reply_token, TextSendMessage(text=help_text))
         return
-
     elif command[1] == "leave":
         send_pending_leaves(reply_token)
         return
@@ -262,7 +271,6 @@ def send_pending_leaves(reply_token):
         return
         
     try:
-        # Use FieldFilter for query performance
         docs = db.collection(LEAVE_COLLECTION).where(filter=FieldFilter("status", "==", "Pending")).stream()
         pending_leaves = [doc.to_dict() for doc in docs]
     except Exception as e:
@@ -270,13 +278,10 @@ def send_pending_leaves(reply_token):
         line_bot_api.reply_message(reply_token, TextSendMessage(text="❌ เกิดข้อผิดพลาดในการดึงรายการลา"))
         return
 
-    # ... (Carousel message generation logic using pending_leaves[:10]) ...
-    # (Same logic as previous version, omitted for brevity)
     columns = []
     if pending_leaves:
         for leave in pending_leaves[:10]:
-            # Ensure doc_id is used for Postback data
-            doc_id = leave.get('doc_id') or db.collection(LEAVE_COLLECTION).document(leave.get('leave_id')).id # Fallback
+            doc_id = leave.get('doc_id') 
             
             column = CarouselColumn(
                 title=f"⏳ {leave.get('leave_type')}",
@@ -298,18 +303,19 @@ def send_pending_leaves(reply_token):
     else:
         line_bot_api.reply_message(reply_token, TextSendMessage(text="✅ ไม่มีรายการลาที่รอการอนุมัติ"))
 
-
 # --- FLASK ROUTES ---
-
 @app.route("/images/<filename>")
 def serve_image(filename):
     """Serves generated images from the /tmp directory."""
-    return send_from_directory(IMAGE_DIR, filename)
+    try:
+        return send_from_directory(IMAGE_DIR, filename)
+    except Exception as e:
+        app.logger.error(f"Error serving image {filename}: {e}")
+        abort(404)
 
 @app.route("/webhook", methods=['POST'])
 def webhook():
     """Main LINE Webhook Handler."""
-    # ✅ แก้ไข: ตรวจสอบความพร้อมของบริการทั้งหมด
     if not handler or not line_bot_api or not db:
         app.logger.error("Service not ready (LINE/Firebase). Check environment variables.")
         return "Service Not Ready", 503 
@@ -325,18 +331,18 @@ def webhook():
         abort(400)
     except Exception as e:
         app.logger.error(f"Error handling webhook: {e}")
-        abort(500)
+        # Log error details but return OK to prevent LINE from retrying excessively
+        return 'OK' 
         
     return 'OK'
 
 # --- MESSAGE HANDLER ---
-
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     text = event.message.text.strip()
     reply_token = event.reply_token
     user_id = event.source.user_id
-
+    
     # 🌟 Admin Check 🌟
     if is_admin(user_id) and text.lower().startswith("admin"):
         handle_admin_command(event, text)
@@ -345,8 +351,8 @@ def handle_message(event):
     # --- User Commands and State Management (Leave Request Flow) ---
     if text in ["ลา", "ขอลา", "#แจ้งลา"]:
         # Initiate/Restart leave request flow
-        if user_id in user_states: del user_states[user_id]
-        user_states[user_id] = {"step": "awaiting_leave_type", "data": {}}
+        clear_session_state(user_id) 
+        save_session_state(user_id, "awaiting_leave_type", {})
         
         leave_buttons = [QuickReplyButton(action=MessageAction(label=lt, text=lt)) for lt in LEAVE_TYPES]
         leave_buttons.append(QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก")))
@@ -358,57 +364,71 @@ def handle_message(event):
     elif text in ["เวร", "เวรวันนี้"]:
         date_today = datetime.now().strftime("%Y-%m-%d")
         assignments = get_duty_by_date(date_today)
-        # Assuming you have a send_duty_message function
-        # line_bot_api.reply_message(reply_token, TextSendMessage(text=f"เวรวันนี้: {assignments}")) 
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="แสดงเวรวันนี้ (ต้องเพิ่มฟังก์ชัน send_duty_message) หากข้อมูลใน Firestore พร้อม"))
+        send_duty_message(reply_token, date_today, assignments)
         return
         
     elif text == "#ยกเลิก":
-        if user_id in user_states: del user_states[user_id]
+        clear_session_state(user_id)
         line_bot_api.reply_message(reply_token, TextSendMessage(text="❌ ยกเลิกการทำรายการเรียบร้อยแล้วครับ"))
         return
         
-    # --- State-Driven Input (Awaiting Reason, Awaiting Name) ---
-    if user_id in user_states:
-        current_step = user_states[user_id]['step']
-        # (The rest of the state-driven logic from your merged code should be here: 
-        # awaiting_leave_type, awaiting_reason, awaiting_name, awaiting_confirmation)
-        # Note: Awaiting_leave_type/awaiting_name expects a message from Quick Reply
-        
-        if current_step == "awaiting_reason":
+    # --- State-Driven Input (Awaiting Type, Reason, Name) ---
+    session_state = get_session_state(user_id)
+    if session_state:
+        current_step = session_state['step']
+        data_state = session_state['data']
+
+        # STEP 1: Awaiting Leave Type (from Quick Reply)
+        if current_step == "awaiting_leave_type" and text in LEAVE_TYPES:
+            data_state['leave_type'] = text
+            # Transition to Date Picker
+            save_session_state(user_id, "awaiting_start_date", data_state)
+            quick_reply_items = [
+                QuickReplyButton(action=DatetimePickerAction(label="🗓️ เลือกวันเริ่มต้น", data="set_start_date", mode="date", initial=datetime.now().strftime('%Y-%m-%d'))),
+                QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))
+            ]
+            line_bot_api.reply_message(reply_token, TextSendMessage(
+                text=f"ประเภทการลา: **{text}**\nกรุณาเลือกวันเริ่มต้นการลาครับ", 
+                quick_reply=QuickReply(items=quick_reply_items)
+            ))
+            return
+
+        # STEP 4: Awaiting Reason (Free Text)
+        elif current_step == "awaiting_reason":
             if len(text.strip()) < 5:
                 line_bot_api.reply_message(reply_token, TextSendMessage(text="กรุณาพิมพ์เหตุผลการลาที่ชัดเจนและยาวกว่า 5 ตัวอักษรครับ"))
                 return
-            user_states[user_id]['data']['reason'] = text.strip()
-            user_states[user_id]['step'] = "awaiting_name"
+            data_state['reason'] = text.strip()
             
             # Transition to Name Picker
-            personnel_names = [p['name'] for p in get_personnel_data()] # Get names dynamically
+            personnel_names = [p.get('name') for p in get_personnel_data() if p.get('name')] 
+            save_session_state(user_id, "awaiting_name", data_state)
+            
             name_buttons = [QuickReplyButton(action=MessageAction(label=name, text=name)) for name in personnel_names]
             name_buttons.append(QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก")))
-
+            
             line_bot_api.reply_message(
                 reply_token, 
                 TextSendMessage(text="กรุณาเลือกชื่อกำลังพลที่ต้องการลาครับ:", quick_reply=QuickReply(items=name_buttons))
             )
             return
             
+        # STEP 5: Awaiting Name (from Quick Reply)
         elif current_step == "awaiting_name":
-            personnel_names = [p['name'] for p in get_personnel_data()]
+            personnel_names = [p.get('name') for p in get_personnel_data() if p.get('name')]
             if text in personnel_names:
-                user_states[user_id]['data']['personnel_name'] = text
-                user_states[user_id]['step'] = "awaiting_confirmation"
+                data_state['personnel_name'] = text
+                save_session_state(user_id, "awaiting_confirmation", data_state)
                 
-                # ... (Confirmation Message/Quick Reply logic) ...
-                data = user_states[user_id]['data']
+                # Confirmation Message
                 summary_text = (
                     "สรุปรายการแจ้งลา:\n"
-                    f"ประเภท: {data.get('leave_type', '-')}\n"
-                    f"ชื่อผู้ลา: {data.get('personnel_name', '-')}\n"
-                    f"เริ่มต้น: {data.get('start_date', '-')}\n"
-                    f"สิ้นสุด: {data.get('end_date', '-')}\n"
-                    f"รวม: {data.get('duration_days', '-')} วัน\n"
-                    f"เหตุผล: {data.get('reason', '-')}"
+                    f"ประเภท: {data_state.get('leave_type', '-')}\n"
+                    f"ชื่อผู้ลา: {data_state.get('personnel_name', '-')}\n"
+                    f"เริ่มต้น: {data_state.get('start_date', '-')}\n"
+                    f"สิ้นสุด: {data_state.get('end_date', '-')}\n"
+                    f"รวม: {data_state.get('duration_days', '-')} วัน\n"
+                    f"เหตุผล: {data_state.get('reason', '-')}"
                 )
                 confirm_buttons = [
                     QuickReplyButton(action=PostbackAction(label="✅ ยืนยันการแจ้งลา", data="action=confirm_leave")),
@@ -420,10 +440,11 @@ def handle_message(event):
                 line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ กรุณาเลือกชื่อจากปุ่มที่กำหนดครับ"))
                 return
         
+        # General Reminder if user sends message during Postback steps
         elif current_step.startswith("awaiting"):
             line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🤖 ขณะนี้คุณกำลังอยู่ในขั้นตอน '{current_step.replace('awaiting_', '')}' กรุณาดำเนินการต่อ หรือพิมพ์ #ยกเลิก ครับ"))
             return
-
+            
     # --- Default Reply ---
     else:
         line_bot_api.reply_message(
@@ -432,7 +453,7 @@ def handle_message(event):
                 text="🤖 ยินดีต้อนรับ! คุณต้องการตรวจสอบเวรหรือแจ้งลา?\n\nพิมพ์ 'เวร' เพื่อดูเวรวันนี้\nพิมพ์ 'ลา' เพื่อแจ้งความประสงค์ขอลา",
                 quick_reply=QuickReply(
                     items=[
-                        QuickReplyButton(action=PostbackAction(label="เวรวันนี้", data="action=show_duty&date=today")),
+                        QuickReplyButton(action=MessageAction(label="เวรวันนี้", text="เวรวันนี้")),
                         QuickReplyButton(action=MessageAction(label="แจ้งลา", text="#แจ้งลา")),
                     ]
                 )
@@ -440,7 +461,6 @@ def handle_message(event):
         )
 
 # --- POSTBACK HANDLER ---
-
 @handler.add(PostbackEvent)
 def handle_postback(event):
     data = event.postback.data
@@ -455,14 +475,13 @@ def handle_postback(event):
             params[key] = value
     except ValueError:
         return line_bot_api.reply_message(reply_token, TextSendMessage(text="ขออภัย ข้อมูลปุ่มไม่ถูกต้อง"))
-
+        
     action = params.get('action')
-
+    
     # 🌟 Admin Approval Actions 🌟
     if action in ["approve_leave", "reject_leave"] and is_admin(user_id):
-        # ... (Same logic for Admin approval: update Firestore status and push message) ...
         doc_id = params.get('doc_id')
-        status = "Approved" if action == "approve_leave" else "Rejected"
+        status = "อนุมัติ" if action == "approve_leave" else "ไม่อนุมัติ"
         
         try:
             doc_ref = db.collection(LEAVE_COLLECTION).document(doc_id)
@@ -470,29 +489,31 @@ def handle_postback(event):
             if doc.exists:
                 doc_data = doc.to_dict()
                 doc_ref.update({"status": status, "reviewed_by": user_id, "review_timestamp": firestore.SERVER_TIMESTAMP})
-                push_text = f"✅ คำขอลา{doc_data.get('leave_type', '')} ({doc_data.get('start_date', 'N/A')} ถึง {doc_data.get('end_date', 'N/A')}) ได้รับการ**{status}**แล้ว"
+                
+                # Push Message to the user who submitted the leave
+                push_text = f"✅ คำขอลา{doc_data.get('leave_type', '')} ของ {doc_data.get('personnel_name', 'N/A')} (วันที่ {doc_data.get('start_date', 'N/A')}) ได้รับการ**{status}**แล้ว"
                 line_bot_api.push_message(doc_data.get('line_id', user_id), TextSendMessage(text=push_text))
+                
                 return line_bot_api.reply_message(reply_token, TextSendMessage(text=f"✅ อัปเดตสถานะของ {doc_data.get('personnel_name', 'N/A')} เป็น **{status}**"))
             else:
                 return line_bot_api.reply_message(reply_token, TextSendMessage(text="❌ ไม่พบรายการลาที่ต้องการอัปเดต"))
         except Exception as e:
             app.logger.error(f"Error in Admin Approval: {e}")
             return line_bot_api.reply_message(reply_token, TextSendMessage(text=f"❌ ข้อผิดพลาดในการอัปเดต: {e}"))
-
-
-    # --- User State-Driven Actions (Date Picker) ---
-    if user_id not in user_states:
+            
+    # --- User State-Driven Actions (Date Picker & Confirmation) ---
+    session_state = get_session_state(user_id)
+    if not session_state:
         return line_bot_api.reply_message(reply_token, TextSendMessage(text="🤖 กรุณาพิมพ์ #แจ้งลา เพื่อเริ่มต้นการทำรายการใหม่ครับ"))
         
-    current_step = user_states[user_id]['step']
-    data_state = user_states[user_id]['data']
+    current_step = session_state['step']
+    data_state = session_state['data']
     date_str = event.postback.params.get('date') if event.postback.params else None
-
+    
     # STEP 2: Start Date Selection (set_start_date)
     if params.get('data') == "set_start_date" and current_step == "awaiting_start_date" and date_str:
-        # ... (Transition to End Date Picker logic) ...
         data_state['start_date'] = date_str
-        user_states[user_id]['step'] = "awaiting_end_date"
+        save_session_state(user_id, "awaiting_end_date", data_state)
         
         quick_reply_items = [
             QuickReplyButton(action=DatetimePickerAction(label="🗓️ เลือกวันสิ้นสุด", data="set_end_date", mode="date", initial=date_str)),
@@ -503,43 +524,40 @@ def handle_postback(event):
             quick_reply=QuickReply(items=quick_reply_items)
         ))
         return
-
+        
     # STEP 3: End Date Selection (set_end_date)
     elif params.get('data') == "set_end_date" and current_step == "awaiting_end_date" and date_str:
-        # ... (Validate and Calculate Duration logic) ...
         start_date_str = data_state.get('start_date')
         if not start_date_str: 
-            del user_states[user_id]
+            clear_session_state(user_id)
             return line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ เกิดข้อผิดพลาด ไม่พบวันเริ่มต้น กรุณาพิมพ์ #แจ้งลา ใหม่ครับ"))
-
+            
         start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
         end_date = datetime.strptime(date_str, '%Y-%m-%d').date()
         
         if end_date < start_date:
             return line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ วันสิ้นสุดต้องไม่ก่อนวันเริ่มต้น กรุณาเลือกใหม่ครับ"))
-
+            
         data_state['end_date'] = date_str
         data_state['duration_days'] = (end_date - start_date).days + 1
-        user_states[user_id]['step'] = "awaiting_reason"
+        save_session_state(user_id, "awaiting_reason", data_state)
         
         line_bot_api.reply_message(reply_token, TextSendMessage(
             text=f"🗓️ ระยะเวลาลา **{start_date_str}** ถึง **{date_str}** รวม **{data_state['duration_days']} วัน**\n\nกรุณาพิมพ์เหตุผลในการลาครับ"
         ))
         return
-
-    # STEP 5: Final Confirmation (confirm_leave)
+        
+    # STEP 6: Final Confirmation (confirm_leave)
     elif action == "confirm_leave" and current_step == "awaiting_confirmation":
-        # ... (Save to Firestore, Generate Image, Send Final Message) ...
         data_to_save = data_state
-        # Assuming current user is the one submitting the request (though they choose the name)
         line_user_id_submitting = user_id 
         
         save_successful = save_leave_to_firestore(line_user_id_submitting, data_to_save)
-        del user_states[user_id] # Clear state IMMEDIATELY after successful submission
-
+        clear_session_state(user_id) 
+        
         if not save_successful:
             return line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ เกิดข้อผิดพลาดในการบันทึกข้อมูล (Firestore) กรุณาลองใหม่อีกครั้งครับ"))
-
+            
         image_path, image_url = generate_summary_image(data_to_save)
         
         if image_path and image_url:
@@ -547,15 +565,13 @@ def handle_postback(event):
             image_message = ImageSendMessage(original_content_url=image_url, preview_image_url=image_url)
             line_bot_api.reply_message(reply_token, [TextSendMessage(text=summary_text), image_message])
         else:
-            # Fallback if image generation fails (and warn about PIL/font issue)
-            fallback_text = f"✅ บันทึกการลาเรียบร้อยแล้ว (ID: {data_to_save.get('doc_id', 'N/A')})\n\n[ไม่สามารถสร้างรูปภาพสรุปได้ - ตรวจสอบ PIL/Font ใน Render Log]\nประเภท: {data_to_save['leave_type']}"
+            fallback_text = f"✅ บันทึกการลาเรียบร้อยแล้ว (ID: {data_to_save.get('doc_id', 'N/A')})\n\n[ไม่สามารถสร้างรูปภาพสรุปได้]\nประเภท: {data_to_save['leave_type']}"
             line_bot_api.reply_message(reply_token, TextSendMessage(text=fallback_text))
-
         return
         
     # --- Fallback for unhandled postback ---
-    # ...
-
+    # (If necessary, you can add a fallback response here)
+    
 # --- Run Application ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
