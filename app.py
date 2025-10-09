@@ -248,8 +248,8 @@ def save_leave_to_firestore(line_id, data):
         data.update({
             "line_id": line_id,
             "timestamp": firestore.SERVER_TIMESTAMP,
-            "status": 'Pending', 
-            "doc_id": doc_ref.id, 
+            "status": 'Pending',  
+            "doc_id": doc_ref.id,  
             "submission_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         })
         doc_ref.set(data)
@@ -435,7 +435,7 @@ def send_pending_leaves(reply_token):
     columns = []
     if pending_leaves:
         for leave in pending_leaves[:10]:
-            doc_id = leave.get('doc_id') 
+            doc_id = leave.get('doc_id')  
             
             column = CarouselColumn(
                 title=f"⏳ {leave.get('leave_type')}",
@@ -473,7 +473,7 @@ def webhook():
     """Main LINE Webhook Handler."""
     if not handler or not line_bot_api or not db:
         app.logger.error("Service not ready (LINE/Firebase). Check environment variables.")
-        return "Service Not Ready", 503 
+        return "Service Not Ready", 503  
         
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
@@ -487,7 +487,7 @@ def webhook():
     except Exception as e:
         app.logger.error(f"Error handling webhook: {e}")
         # Log error details but return OK to prevent LINE from retrying excessively
-        return 'OK' 
+        return 'OK'  
         
     return 'OK'
 
@@ -506,7 +506,7 @@ def handle_message(event):
     # --- User Commands ---
     if text in ["ลา", "ขอลา", "#แจ้งลา"]:
         # Initiate/Restart leave request flow
-        clear_session_state(user_id) 
+        clear_session_state(user_id)  
         save_session_state(user_id, "awaiting_leave_type", {})
         
         leave_buttons = [QuickReplyButton(action=MessageAction(label=lt, text=lt)) for lt in LEAVE_TYPES]
@@ -619,14 +619,26 @@ def handle_message(event):
             # Check-in Name selected -> log the action
             success, message = log_duty_action(user_id, text, 'checkin')
             clear_session_state(user_id)
+            
+            # 💡 NEW: แสดงเวรวันนี้เพื่อให้ผู้ใช้เห็นสถานะที่อัปเดต
+            date_today = datetime.now().strftime("%Y-%m-%d")
+            assignments = get_duty_by_date(date_today)
+            
             line_bot_api.reply_message(reply_token, TextSendMessage(text=message))
+            send_duty_message(reply_token, date_today, assignments) # ส่งข้อความเวรอีกครั้ง
             return
             
         elif current_step == "awaiting_checkout_name" and text in personnel_names:
             # Check-out Name selected -> log the action
             success, message = log_duty_action(user_id, text, 'checkout')
             clear_session_state(user_id)
+            
+            # 💡 NEW: แสดงเวรวันนี้เพื่อให้ผู้ใช้เห็นสถานะที่อัปเดต
+            date_today = datetime.now().strftime("%Y-%m-%d")
+            assignments = get_duty_by_date(date_today)
+            
             line_bot_api.reply_message(reply_token, TextSendMessage(text=message))
+            send_duty_message(reply_token, date_today, assignments) # ส่งข้อความเวรอีกครั้ง
             return
             
         # General Reminder if user sends message during Postback steps
@@ -634,18 +646,18 @@ def handle_message(event):
             line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🤖 ขณะนี้คุณกำลังอยู่ในขั้นตอน '{current_step.replace('awaiting_', '')}' กรุณาดำเนินการต่อ หรือพิมพ์ #ยกเลิก ครับ"))
             return
             
-    # --- Default Reply ---
+    # --- Default Reply (เมนูหลักสำหรับผู้ใช้) ---
     else:
         line_bot_api.reply_message(
             reply_token,
             TextSendMessage(
-                text="🤖 ยินดีต้อนรับ! คุณต้องการตรวจสอบเวร, แจ้งลา, หรือลงบันทึกปฏิบัติงาน?",
+                text="🤖 **เมนูหลัก**\nคุณต้องการทำรายการใดครับ?",
                 quick_reply=QuickReply(
                     items=[
-                        QuickReplyButton(action=MessageAction(label="เวรวันนี้", text="#เวร")),
-                        QuickReplyButton(action=MessageAction(label="แจ้งลา", text="#แจ้งลา")),
-                        QuickReplyButton(action=MessageAction(label="เข้าเวร", text="#เข้าเวร")),
-                        QuickReplyButton(action=MessageAction(label="ออกเวร", text="#ออกเวร")),
+                        QuickReplyButton(action=MessageAction(label="🗓️ เวรวันนี้", text="#เวร")),
+                        QuickReplyButton(action=MessageAction(label="📝 แจ้งลา", text="#แจ้งลา")),
+                        QuickReplyButton(action=MessageAction(label="🕒 เข้าเวร", text="#เข้าเวร")),
+                        QuickReplyButton(action=MessageAction(label="🛑 ออกเวร", text="#ออกเวร")),
                     ]
                 )
             )
@@ -751,18 +763,30 @@ def handle_postback(event):
             
         image_path, image_url = generate_summary_image(data_to_save)
         
+        summary_text = f"✅ บันทึกการลาเรียบร้อยแล้ว (ID: {data_to_save.get('doc_id', 'N/A')})\\n\\n**สถานะ: รอการอนุมัติ**"
+
         if image_path and image_url:
-            summary_text = f"✅ บันทึกการลาเรียบร้อยแล้ว (ID: {data_to_save.get('doc_id', 'N/A')})\nรายละเอียดตามรูปภาพด้านล่างนี้ครับ"
-            image_message = ImageSendMessage(original_content_url=image_url, preview_image_url=image_url)
-            line_bot_api.reply_message(reply_token, [TextSendMessage(text=summary_text), image_message])
+            # ส่งเป็น Image Map หรือ Image Message แทนการส่ง Text ธรรมดา
+            # เนื่องจาก LineBot API ไม่รองรับ ImageMapAction ใน QuickReplyButton (ต้องใช้ ImageSendMessage)
+            image_message = ImageSendMessage(
+                original_content_url=image_url,
+                preview_image_url=image_url 
+            )
+            line_bot_api.reply_message(reply_token, [
+                TextSendMessage(text=summary_text),
+                image_message
+            ])
         else:
-            fallback_text = f"✅ บันทึกการลาเรียบร้อยแล้ว (ID: {data_to_save.get('doc_id', 'N/A')})\n\n[ไม่สามารถสร้างรูปภาพสรุปได้]\nประเภท: {data_to_save['leave_type']}"
-            line_bot_api.reply_message(reply_token, TextSendMessage(text=fallback_text))
-        return
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=summary_text))
         
-    # --- Fallback for unhandled postback ---
-    
-# --- Run Application ---
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+        # 💡 NEW: แจ้งเตือน Admin ว่ามีรายการใหม่เข้ามา
+        admin_alert_text = (
+            "🔔 **แจ้งเตือน Admin: คำขอลาใหม่** 🔔\\n"
+            f"ผู้ลา: {data_to_save.get('personnel_name', '-')}\\n"
+            f"ประเภท: {data_to_save.get('leave_type', '-')}\\n"
+            f"วันที่: {data_to_save.get('start_date', '-')} ถึง {data_to_save.get('end_date', '-')}\\n"
+            "พิมพ์ `admin leave` เพื่อตรวจสอบและอนุมัติ"
+        )
+        line_bot_api.push_message(ADMIN_LINE_ID, TextSendMessage(text=admin_alert_text))
+        
+        return
