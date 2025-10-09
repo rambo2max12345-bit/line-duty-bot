@@ -37,8 +37,8 @@ CHANNEL_ACCESS_TOKEN = os.getenv("8Qa3lq+KjkF68P1W6xAkkuRyoXpz9YyuQI2nOKJRu/ndsv
 CHANNEL_SECRET = os.getenv("1d0c51790d0bff2b98dbb98dc8f72663")
 
 app = Flask(__name__)
-line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(CHANNEL_SECRET)
+line_bot_api = LineBotApi(8Qa3lq+KjkF68P1W6xAkkuRyoXpz9YyuQI2nOKJRu/ndsvfGLZIft6ltdgYV8vMEbBkz5AWzYoF+CaS7u0OShmuZvo5Yufb6+Xvr4gBti4Gc4cp45MCnyD0cte94vZyyEhLKC3WJKvd9usUXqCwrOgdB04t89/1O/w1cDnyilFU=)
+handler = WebhookHandler(1d0c51790d0bff2b98dbb98dc8f72663)
 
 # --- เชื่อม Firebase ---
 try:
@@ -124,4 +124,5 @@ def handle_postback(event):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
