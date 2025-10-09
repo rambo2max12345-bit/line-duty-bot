@@ -22,7 +22,8 @@ FIREBASE_CREDENTIALS_JSON = os.getenv("FIREBASE_CREDENTIALS_JSON")
 app = Flask(__name__)
 
 # 🌟 Admin Configuration 🌟
-ADMIN_LINE_ID = os.getenv("ADMIN_LINE_ID", "max466123") 
+# ใช้สำหรับระบุ Line ID ของผู้ดูแลระบบเพื่อเข้าถึงคำสั่งพิเศษ
+ADMIN_LINE_ID = os.getenv("ADMIN_LINE_ID", "max466123")  
 
 # LINE API setup
 line_bot_api = None
@@ -56,8 +57,20 @@ try:
     from PIL import Image, ImageDraw, ImageFont
     IMAGE_DIR = "/tmp/line_bot_images"
     os.makedirs(IMAGE_DIR, exist_ok=True)
-    # ⚠️ CHECK: Ensure 'arial.ttf' or similar Thai font is available in the deployment environment
-    FONT_PATH = "arial.ttf" 
+    
+    # --- FONT FIX: ต้องแน่ใจว่าไฟล์ Sarabun-Regular.ttf อยู่ใน Root Directory ของโปรเจกต์ ---
+    FONT_FILENAME = "Sarabun-Regular.ttf"  
+    FONT_PATH = os.path.join(os.getcwd(), FONT_FILENAME)
+    
+    # ทดสอบโหลดฟอนต์ในช่วงเริ่มต้น หากล้มเหลวจะใช้ FONT_PATH = None
+    try:
+        ImageFont.truetype(FONT_PATH, 1) 
+        app.logger.info(f"Custom font loaded successfully from {FONT_PATH}.")
+    except IOError:
+        FONT_PATH = None
+        app.logger.warning(f"Custom font file '{FONT_FILENAME}' not found. Using default font.")
+    # --- END OF FONT FIX ---
+        
 except ImportError:
     Image, ImageDraw, ImageFont, FONT_PATH = None, None, None, None
     app.logger.warning("Pillow not installed. Image generation disabled.")
@@ -65,8 +78,9 @@ except ImportError:
 # Constants
 PERSONNEL_COLLECTION = "personnel"
 DUTY_COLLECTION = "duty_rotation"
-LEAVE_COLLECTION = "line_duty_leave" 
+LEAVE_COLLECTION = "line_duty_leave"  
 SESSION_COLLECTION = "user_sessions" # ใช้สำหรับเก็บสถานะแทน user_states = {}
+DUTY_LOGS_COLLECTION = "duty_logs" # คอลเลกชันใหม่สำหรับบันทึกการเข้า-ออกเวร
 LEAVE_TYPES = ["ลาพัก", "ลากิจ", "ลาป่วย", "ราชการ"]
 
 # --- UTILITY & DATA FUNCTIONS (State Management) ---
@@ -113,7 +127,7 @@ def _get_font(size):
         try:
             return ImageFont.truetype(FONT_PATH, size)
         except IOError:
-            app.logger.warning(f"Font file {FONT_PATH} not found. Using default font.")
+            app.logger.warning(f"Error loading TrueType font from {FONT_PATH}. Using default font.")
     if ImageFont:
         return ImageFont.load_default()
     return None
@@ -128,41 +142,103 @@ def get_personnel_data():
         app.logger.error(f"Error fetching personnel data: {e}")
         return []
 
+def get_personnel_names():
+    """Retrieves a list of all personnel names."""
+    return [p.get('name') for p in get_personnel_data() if p.get('name')]
+
 def get_duty_by_date(date_str):
     """Calculates duty assignment for a given date using Firestore data."""
     personnel = get_personnel_data()
     if not personnel or not db: return None
-    try:
-        date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
-    except ValueError:
-        return None
+    
+    # กรองกำลังพลที่ลาในวันนี้ออกก่อน
+    leave_list = get_leaves_on_date(date_str)
+    
+    # สร้าง Map: ชื่อกำลังพล -> สถานะการลา
+    leave_map = {leave['personnel_name']: leave['leave_type'] for leave in leave_list}
+
+    # กรองกำลังพลที่ไม่ลา และเรียงลำดับตาม duty_priority
+    available_personnel = [p for p in personnel if p.get('name') not in leave_map]
+    if not available_personnel: 
+        return [] # ไม่มีใครอยู่
+    
+    available_personnel.sort(key=lambda x: x.get("duty_priority", 999))
+    num_personnel = len(available_personnel)
+    
+    # ดึงรูปแบบเวรจาก Firestore
     duty_defs = []
     try:
-        # ดึงรูปแบบเวรจาก Firestore
         docs = db.collection(DUTY_COLLECTION).order_by("priority").stream()
         duty_defs = [doc.to_dict() for doc in docs]
     except Exception as e:
         app.logger.error(f"Error fetching duty rotation data: {e}")
         return None
     if not duty_defs: return None
-    personnel.sort(key=lambda x: x.get("duty_priority", 999))
-    num_personnel = len(personnel)
     
+    try:
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+        
     # Rotation Logic (Assuming reference date is 2024-01-01)
     reference_date = date(2024, 1, 1)
     day_diff = (date_obj - reference_date).days
     
     duty_assignments = []
+    
+    # 1. จัดเวรให้กำลังพลที่อยู่
     for i, duty_info in enumerate(duty_defs):
+        # ใช้ดัชนีหมุนเวียนกับกำลังพลที่อยู่
         person_index = (day_diff + i) % num_personnel
-        person = personnel[person_index]
+        person = available_personnel[person_index]
         duty_assignments.append({
             "duty": duty_info.get("duty_name", "Duty N/A"), 
             "name": person.get("name", "Name N/A"), 
-            "color": duty_info.get("color", "#000000")
+            "color": duty_info.get("color", "#000000"),
+            "status": "ปฏิบัติงาน"
+        })
+    
+    # 2. เพิ่มกำลังพลที่ลาเข้ามาในรายการ (เพื่อแสดงให้ครบ)
+    for name, leave_type in leave_map.items():
+        duty_assignments.append({
+            "duty": f"ลา ({leave_type})",
+            "name": name,
+            "color": "#FF0000",
+            "status": "ลา"
         })
         
     return duty_assignments
+
+def get_leaves_on_date(date_str):
+    """Retrieves approved leave data that covers the given date."""
+    if not db: return []
+    try:
+        # ดึงรายการที่อนุมัติแล้วและมีวันเริ่มต้น/สิ้นสุดใกล้เคียง
+        # หมายเหตุ: Firestore ไม่รองรับการ Query ช่วงวันที่ที่ซับซ้อนโดยตรง (ต้องใช้ >= และ <= ใน Field เดียวกัน)
+        # ดังนั้นจะ Query แบบกว้างๆ แล้วกรองใน Python
+        date_query = datetime.strptime(date_str, '%Y-%m-%d').strftime('%Y-%m-%d')
+        
+        # ดึงรายการลาที่อนุมัติแล้วทั้งหมด
+        docs = db.collection(LEAVE_COLLECTION).where(filter=FieldFilter("status", "==", "อนุมัติ")).stream()
+        all_approved_leaves = [doc.to_dict() for doc in docs]
+        
+        # กรองใน Python
+        leaves_on_date = []
+        target_date = datetime.strptime(date_query, '%Y-%m-%d').date()
+        for leave in all_approved_leaves:
+            try:
+                start = datetime.strptime(leave.get('start_date'), '%Y-%m-%d').date()
+                end = datetime.strptime(leave.get('end_date'), '%Y-%m-%d').date()
+                if start <= target_date <= end:
+                    leaves_on_date.append(leave)
+            except ValueError:
+                # Handle invalid date format in DB
+                continue
+                
+        return leaves_on_date
+    except Exception as e:
+        app.logger.error(f"Error fetching leaves on date {date_str}: {e}")
+        return []
 
 def save_leave_to_firestore(line_id, data):
     """Saves the final leave request data to Firestore."""
@@ -181,6 +257,52 @@ def save_leave_to_firestore(line_id, data):
     except Exception as e:
         app.logger.error(f"Error saving leave to Firestore: {e}")
         return False
+
+def get_duty_log_for_today(name, log_type):
+    """Checks if a log_type (checkin/checkout) exists for today for a given personnel name."""
+    if not db: return None
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    try:
+        query = db.collection(DUTY_LOGS_COLLECTION).where(filter=FieldFilter("name", "==", name)).where(filter=FieldFilter("date", "==", today_str)).where(filter=FieldFilter("log_type", "==", log_type)).limit(1).stream()
+        docs = list(query)
+        return docs[0].to_dict() if docs else None
+    except Exception as e:
+        app.logger.error(f"Error checking duty log: {e}")
+        return None
+
+def log_duty_action(user_id, name, log_type):
+    """Logs the check-in or check-out action to Firestore."""
+    if not db: return False
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    time_str = datetime.now().strftime('%H:%M:%S')
+    
+    # ตรวจสอบว่ามีการลงเวลาไปแล้วหรือยัง
+    existing_log = get_duty_log_for_today(name, log_type)
+    if existing_log:
+        return False, f"คุณได้ลงเวลา{log_type}แล้วเมื่อ {existing_log.get('time', 'N/A')} วันนี้"
+    
+    # ตรวจสอบเวร
+    assignments = get_duty_by_date(today_str)
+    on_duty_names = [a['name'] for a in assignments if a['status'] == 'ปฏิบัติงาน']
+    
+    if name not in on_duty_names:
+        return False, f"⚠️ คุณ {name} ไม่ได้มีเวรประจำวันนี้"
+
+    # บันทึก
+    try:
+        db.collection(DUTY_LOGS_COLLECTION).add({
+            "line_id": user_id,
+            "name": name,
+            "date": today_str,
+            "time": time_str,
+            "log_type": log_type,
+            "timestamp": firestore.SERVER_TIMESTAMP
+        })
+        return True, f"✅ บันทึกเวลา{log_type}สำเร็จ เวลา {time_str}"
+    except Exception as e:
+        app.logger.error(f"Error saving duty log: {e}")
+        return False, "❌ ข้อผิดพลาดในการบันทึก Duty Log (Firestore)"
+
 
 def generate_summary_image(data):
     """Generates a summary image of the leave request using PIL."""
@@ -232,18 +354,50 @@ def generate_summary_image(data):
         return None, None
 
 def send_duty_message(reply_token, date_str, assignments):
-    """Sends a summary of duty assignments."""
+    """Sends a summary of duty assignments, including leave and duty logs."""
     if not assignments:
         line_bot_api.reply_message(reply_token, TextSendMessage(text=f"ไม่พบข้อมูลเวรสำหรับวันที่ {date_str}"))
         return
         
     summary = f"🗓️ **เวรประจำวันที่ {date_str}**\n\n"
+    duty_count = 0
+    leave_count = 0
+    
     for item in assignments:
-        summary += f"▶️ {item['duty']}: **{item['name']}**\n"
+        log_type_label = ""
+        log_type_text = ""
+        
+        if item['status'] == 'ปฏิบัติงาน':
+            log_in = get_duty_log_for_today(item['name'], 'checkin')
+            log_out = get_duty_log_for_today(item['name'], 'checkout')
+            
+            if log_in:
+                log_type_label = "✅ เข้า"
+                log_type_text = f" ({log_in.get('time', '-')})"
+            
+            if log_out:
+                log_type_label = "❌ ออก"
+                log_type_text = f" ({log_out.get('time', '-')})"
+
+            if log_in and log_out:
+                 log_type_label = "💯 ครบ"
+                 log_type_text = f" ({log_in.get('time', '-')}-{log_out.get('time', '-')})"
+            elif log_in and not log_out:
+                 log_type_label = "⏳ ปฏิบัติงาน"
+            elif not log_in and not log_out:
+                 log_type_label = "❗ ยังไม่เข้า"
+            
+            summary += f"▶️ {item['duty']}: **{item['name']}** [{log_type_label}{log_type_text}]\n"
+            duty_count += 1
+        elif item['status'] == 'ลา':
+            summary += f"🌴 {item['duty']}: *{item['name']}*\n"
+            leave_count += 1
         
     line_bot_api.reply_message(reply_token, TextSendMessage(text=summary))
 
 # --- ADMIN HANDLERS ---
+# (Admin Handlers เหมือนเดิม)
+
 def handle_admin_command(event, text):
     """Handles commands exclusively for the admin."""
     command = text.lower().split()
@@ -303,7 +457,8 @@ def send_pending_leaves(reply_token):
     else:
         line_bot_api.reply_message(reply_token, TextSendMessage(text="✅ ไม่มีรายการลาที่รอการอนุมัติ"))
 
-# --- FLASK ROUTES ---
+
+# --- FLASK ROUTES (เหมือนเดิม) ---
 @app.route("/images/<filename>")
 def serve_image(filename):
     """Serves generated images from the /tmp directory."""
@@ -336,7 +491,7 @@ def webhook():
         
     return 'OK'
 
-# --- MESSAGE HANDLER ---
+# --- MESSAGE HANDLER (รวม Check-in/out) ---
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     text = event.message.text.strip()
@@ -348,7 +503,7 @@ def handle_message(event):
         handle_admin_command(event, text)
         return
     
-    # --- User Commands and State Management (Leave Request Flow) ---
+    # --- User Commands ---
     if text in ["ลา", "ขอลา", "#แจ้งลา"]:
         # Initiate/Restart leave request flow
         clear_session_state(user_id) 
@@ -361,7 +516,7 @@ def handle_message(event):
         line_bot_api.reply_message(reply_token, reply_msg)
         return
     
-    elif text in ["เวร", "เวรวันนี้"]:
+    elif text in ["เวร", "เวรวันนี้", "#เวร"]:
         date_today = datetime.now().strftime("%Y-%m-%d")
         assignments = get_duty_by_date(date_today)
         send_duty_message(reply_token, date_today, assignments)
@@ -372,16 +527,44 @@ def handle_message(event):
         line_bot_api.reply_message(reply_token, TextSendMessage(text="❌ ยกเลิกการทำรายการเรียบร้อยแล้วครับ"))
         return
         
-    # --- State-Driven Input (Awaiting Type, Reason, Name) ---
+    # --- NEW: Check-in / Check-out Commands ---
+    elif text in ["เข้าเวร", "#เข้าเวร"]:
+        clear_session_state(user_id)
+        save_session_state(user_id, "awaiting_checkin_name", {"action": "checkin"})
+        
+        name_buttons = [QuickReplyButton(action=MessageAction(label=name, text=name)) for name in get_personnel_names()]
+        name_buttons.append(QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก")))
+        
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text="🕒 บันทึกเวลาเข้าเวร: กรุณาเลือกชื่อกำลังพล", quick_reply=QuickReply(items=name_buttons))
+        )
+        return
+        
+    elif text in ["ออกเวร", "#ออกเวร"]:
+        clear_session_state(user_id)
+        save_session_state(user_id, "awaiting_checkout_name", {"action": "checkout"})
+        
+        name_buttons = [QuickReplyButton(action=MessageAction(label=name, text=name)) for name in get_personnel_names()]
+        name_buttons.append(QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก")))
+        
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text="🛑 บันทึกเวลาออกเวร: กรุณาเลือกชื่อกำลังพล", quick_reply=QuickReply(items=name_buttons))
+        )
+        return
+    
+    # --- State-Driven Input (Awaiting Type, Reason, Name, Duty Log Name) ---
     session_state = get_session_state(user_id)
     if session_state:
         current_step = session_state['step']
         data_state = session_state['data']
+        personnel_names = get_personnel_names()
 
-        # STEP 1: Awaiting Leave Type (from Quick Reply)
+        # --- Leave Request Flow Steps ---
         if current_step == "awaiting_leave_type" and text in LEAVE_TYPES:
+            # Step 1: Leave Type selected -> move to date picker (Postback handles date)
             data_state['leave_type'] = text
-            # Transition to Date Picker
             save_session_state(user_id, "awaiting_start_date", data_state)
             quick_reply_items = [
                 QuickReplyButton(action=DatetimePickerAction(label="🗓️ เลือกวันเริ่มต้น", data="set_start_date", mode="date", initial=datetime.now().strftime('%Y-%m-%d'))),
@@ -393,15 +576,12 @@ def handle_message(event):
             ))
             return
 
-        # STEP 4: Awaiting Reason (Free Text)
         elif current_step == "awaiting_reason":
+            # Step 4: Reason entered -> move to name selection
             if len(text.strip()) < 5:
                 line_bot_api.reply_message(reply_token, TextSendMessage(text="กรุณาพิมพ์เหตุผลการลาที่ชัดเจนและยาวกว่า 5 ตัวอักษรครับ"))
                 return
             data_state['reason'] = text.strip()
-            
-            # Transition to Name Picker
-            personnel_names = [p.get('name') for p in get_personnel_data() if p.get('name')] 
             save_session_state(user_id, "awaiting_name", data_state)
             
             name_buttons = [QuickReplyButton(action=MessageAction(label=name, text=name)) for name in personnel_names]
@@ -413,33 +593,42 @@ def handle_message(event):
             )
             return
             
-        # STEP 5: Awaiting Name (from Quick Reply)
-        elif current_step == "awaiting_name":
-            personnel_names = [p.get('name') for p in get_personnel_data() if p.get('name')]
-            if text in personnel_names:
-                data_state['personnel_name'] = text
-                save_session_state(user_id, "awaiting_confirmation", data_state)
-                
-                # Confirmation Message
-                summary_text = (
-                    "สรุปรายการแจ้งลา:\n"
-                    f"ประเภท: {data_state.get('leave_type', '-')}\n"
-                    f"ชื่อผู้ลา: {data_state.get('personnel_name', '-')}\n"
-                    f"เริ่มต้น: {data_state.get('start_date', '-')}\n"
-                    f"สิ้นสุด: {data_state.get('end_date', '-')}\n"
-                    f"รวม: {data_state.get('duration_days', '-')} วัน\n"
-                    f"เหตุผล: {data_state.get('reason', '-')}"
-                )
-                confirm_buttons = [
-                    QuickReplyButton(action=PostbackAction(label="✅ ยืนยันการแจ้งลา", data="action=confirm_leave")),
-                    QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))
-                ]
-                line_bot_api.reply_message(reply_token, TextSendMessage(text=summary_text, quick_reply=QuickReply(items=confirm_buttons)))
-                return
-            else:
-                line_bot_api.reply_message(reply_token, TextSendMessage(text="⚠️ กรุณาเลือกชื่อจากปุ่มที่กำหนดครับ"))
-                return
-        
+        elif current_step == "awaiting_name" and text in personnel_names:
+            # Step 5: Name selected -> move to confirmation (Postback handles confirmation)
+            data_state['personnel_name'] = text
+            save_session_state(user_id, "awaiting_confirmation", data_state)
+            
+            summary_text = (
+                "สรุปรายการแจ้งลา:\n"
+                f"ประเภท: {data_state.get('leave_type', '-')}\n"
+                f"ชื่อผู้ลา: {data_state.get('personnel_name', '-')}\n"
+                f"เริ่มต้น: {data_state.get('start_date', '-')}\n"
+                f"สิ้นสุด: {data_state.get('end_date', '-')}\n"
+                f"รวม: {data_state.get('duration_days', '-')} วัน\n"
+                f"เหตุผล: {data_state.get('reason', '-')}"
+            )
+            confirm_buttons = [
+                QuickReplyButton(action=PostbackAction(label="✅ ยืนยันการแจ้งลา", data="action=confirm_leave")),
+                QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))
+            ]
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=summary_text, quick_reply=QuickReply(items=confirm_buttons)))
+            return
+
+        # --- NEW: Duty Check-in/Check-out Flow Steps ---
+        elif current_step == "awaiting_checkin_name" and text in personnel_names:
+            # Check-in Name selected -> log the action
+            success, message = log_duty_action(user_id, text, 'checkin')
+            clear_session_state(user_id)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=message))
+            return
+            
+        elif current_step == "awaiting_checkout_name" and text in personnel_names:
+            # Check-out Name selected -> log the action
+            success, message = log_duty_action(user_id, text, 'checkout')
+            clear_session_state(user_id)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=message))
+            return
+            
         # General Reminder if user sends message during Postback steps
         elif current_step.startswith("awaiting"):
             line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🤖 ขณะนี้คุณกำลังอยู่ในขั้นตอน '{current_step.replace('awaiting_', '')}' กรุณาดำเนินการต่อ หรือพิมพ์ #ยกเลิก ครับ"))
@@ -450,17 +639,19 @@ def handle_message(event):
         line_bot_api.reply_message(
             reply_token,
             TextSendMessage(
-                text="🤖 ยินดีต้อนรับ! คุณต้องการตรวจสอบเวรหรือแจ้งลา?\n\nพิมพ์ 'เวร' เพื่อดูเวรวันนี้\nพิมพ์ 'ลา' เพื่อแจ้งความประสงค์ขอลา",
+                text="🤖 ยินดีต้อนรับ! คุณต้องการตรวจสอบเวร, แจ้งลา, หรือลงบันทึกปฏิบัติงาน?",
                 quick_reply=QuickReply(
                     items=[
-                        QuickReplyButton(action=MessageAction(label="เวรวันนี้", text="เวรวันนี้")),
+                        QuickReplyButton(action=MessageAction(label="เวรวันนี้", text="#เวร")),
                         QuickReplyButton(action=MessageAction(label="แจ้งลา", text="#แจ้งลา")),
+                        QuickReplyButton(action=MessageAction(label="เข้าเวร", text="#เข้าเวร")),
+                        QuickReplyButton(action=MessageAction(label="ออกเวร", text="#ออกเวร")),
                     ]
                 )
             )
         )
 
-# --- POSTBACK HANDLER ---
+# --- POSTBACK HANDLER (เหมือนเดิม + ปรับปรุง) ---
 @handler.add(PostbackEvent)
 def handle_postback(event):
     data = event.postback.data
@@ -570,7 +761,6 @@ def handle_postback(event):
         return
         
     # --- Fallback for unhandled postback ---
-    # (If necessary, you can add a fallback response here)
     
 # --- Run Application ---
 if __name__ == "__main__":
