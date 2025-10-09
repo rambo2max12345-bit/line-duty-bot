@@ -1,6 +1,13 @@
+# ===== Dependencies for LINE Bot Flask Server =====
 Flask==2.3.2
 line-bot-sdk==2.3.0
-firebase-admin>=6.1.1
+
+# Firebase Admin SDK (ใช้เวอร์ชันเสถียรและรองรับ Python 3.13)
+firebase-admin==7.4.0
+
+# Image and environment handling
 Pillow==10.0.1
 python-dotenv==1.0.1
+
+# Gunicorn for Render deployment
 gunicorn==23.0.0
