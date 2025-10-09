@@ -1,5 +1,6 @@
-Flask
-line-bot-sdk
-firebase-admin
-gunicorn
-Pillow
+Flask>=2.0,<3
+line-bot-sdk>=2.0.2
+firebase-admin>=6.0.0
+google-cloud-firestore>=2.8.0
+Pillow>=9.0.0
+gunicorn>=20.1.0
