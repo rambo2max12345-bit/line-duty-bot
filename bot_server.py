@@ -1,154 +1,126 @@
-// ฟังก์ชันที่ทำงานเมื่อเปิดไฟล์
-function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu('บอทจัดเวร')
-    .addItem('1. จัดตารางเวร', 'generateRoster')
-    .addSeparator()
-    .addItem('2. สร้างสรุปรายงาน', 'generateSummaryReport')
-    .addToUi();
-}
+# -*- coding: utf-8 -*-
 
-/**
- * ฟังก์ชันหลักในการจัดตารางเวร
- */
-function generateRoster() {
-  const ui = SpreadsheetApp.getUi();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
-  // --- 1. อ่านค่าจากการตั้งค่า ---
-  const settingsSheet = ss.getSheetByName('ตั้งค่า');
-  const settings = settingsSheet.getRange('A2:B6').getValues().reduce((obj, row) => {
-    obj[row[0]] = row[1];
-    return obj;
-  }, {});
+# ========================================================================================
+# LINE Bot จัดตารางเวร (เวอร์ชัน 13 - Final Rich Menu)
+# ปรับปรุงให้ใช้ .env สำหรับ Access Token / Secret / Firebase
+# ========================================================================================
 
-  const startTimeStr = settings['เวลาเริ่มเวร (HH:mm)'];
-  const endTimeStr = settings['เวลาสิ้นสุดเวร (HH:mm)'];
-  const numShifts = parseInt(settings['จำนวนผลัด'], 10);
+from flask import Flask, request, abort, send_from_directory
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import (
+    MessageEvent, TextMessage, TextSendMessage,
+    QuickReply, QuickReplyButton, MessageAction,
+    DatetimePickerAction, PostbackEvent,
+    ImageSendMessage
+)
+import os
+import json
+from datetime import datetime, timedelta
+import uuid
 
-  // --- 2. ดึงรายชื่อคนที่ "พร้อมเข้าเวร" ---
-  const nameSheet = ss.getSheetByName('รายชื่อ');
-  const allPersonnel = nameSheet.getRange(2, 1, nameSheet.getLastRow() - 1, 2).getValues();
-  const availablePersonnel = allPersonnel
-    .filter(person => person[1] === '') // กรองเอาเฉพาะคนที่คอลัมน์ 'สถานะ' ว่าง
-    .map(person => person[0]); // เอามาแค่ชื่อ
+import firebase_admin
+from firebase_admin import credentials, firestore
 
-  if (availablePersonnel.length === 0) {
-    ui.alert('ไม่พบรายชื่อผู้ที่พร้อมปฏิบัติหน้าที่!');
-    return;
-  }
+from dotenv import load_dotenv
+load_dotenv()  # อ่านตัวแปรจาก .env
 
-  // --- 3. สุ่มรายชื่อ ---
-  for (let i = availablePersonnel.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [availablePersonnel[i], availablePersonnel[j]] = [availablePersonnel[j], availablePersonnel[i]];
-  }
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
 
-  // --- 4. คำนวณช่วงเวลาของแต่ละผลัด ---
-  const startDate = new Date();
-  const [startHour, startMinute] = startTimeStr.split(':');
-  startDate.setHours(startHour, startMinute, 0, 0);
+# --- ตั้งค่า LINE ---
+CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
+CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
 
-  const endDate = new Date();
-  const [endHour, endMinute] = endTimeStr.split(':');
-  endDate.setHours(endHour, endMinute, 0, 0);
+app = Flask(__name__)
+line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(CHANNEL_SECRET)
 
-  // กรณีข้ามวัน (เช่น 18:00 - 06:00)
-  if (endDate < startDate) {
-    endDate.setDate(endDate.getDate() + 1);
-  }
+# --- เชื่อม Firebase ---
+try:
+    firebase_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
+    if firebase_json:
+        cred_dict = json.loads(firebase_json)
+        cred = credentials.Certificate(cred_dict)
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        app.logger.info("Firebase connected successfully.")
+    else:
+        db = None
+        app.logger.warning("FIREBASE_CREDENTIALS_JSON not found. Firebase not connected.")
+except Exception as e:
+    db = None
+    app.logger.error(f"Firebase connection failed: {e}")
 
-  const totalDurationMinutes = (endDate.getTime() - startDate.getTime()) / 60000;
-  const shiftDurationMinutes = Math.floor(totalDurationMinutes / numShifts);
+# --- หน่วยความจำและรายชื่อ ---
+user_states = {}
+personnel_list = [
+    "อส.ทพ.บุญธรรม เขียวเข็ม", "อส.ทพ.สนธยา ปราบณรงค์", "อส.ทพ.คเนศ เกียรติขวัญบุตร",
+    "อส.ทพ.ณัฐพล แสวงทรัพย์", "อส.ทพ.อาวุธ มณี", "อส.ทพ.อนุชา คำลาด",
+    "อส.ทพ.วีระยุทธ บุญมานัส", "อส.ทพ.กล้าณรงค์ คงลำธาร", "อส.ทพ.ชนะศักดิ์ กาสังข์",
+    "อส.ทพ.เอกชัย ขนาดผล", "อส.ทพ.อนุชา นพวงศ์", "อส.ทพ.โกวิทย์ ทองขาวบัว",
+    "อส.ทพ.สื่อสาร นะครับ", "อส.ทพ.กัมพล ทองศรี"
+]
 
-  const timeSlots = [];
-  let currentShiftTime = new Date(startDate.getTime());
+# --- Serve Image ---
+@app.route("/images/<filename>")
+def serve_image(filename):
+    image_dir = '/tmp/line_bot_images'
+    return send_from_directory(image_dir, filename)
 
-  for (let i = 0; i < numShifts; i++) {
-    const shiftStartTime = new Date(currentShiftTime.getTime());
-    const shiftEndTime = new Date(shiftStartTime.getTime() + shiftDurationMinutes * 60000);
-    
-    const formatTime = (date) => Utilities.formatDate(date, "GMT+7", "HH:mm");
-    
-    // สำหรับผลัดสุดท้าย ให้จบที่เวลาสิ้นสุดเวรพอดี
-    if (i === numShifts - 1) {
-       timeSlots.push(`${formatTime(shiftStartTime)} - ${formatTime(endDate)}`);
-    } else {
-       timeSlots.push(`${formatTime(shiftStartTime)} - ${formatTime(shiftEndTime)}`);
-    }
-    currentShiftTime = shiftEndTime;
-  }
-  
-  // --- 5. จัดคนลงตารางและบันทึกผล ---
-  const rosterSheet = ss.getSheetByName('ตารางเวร');
-  rosterSheet.clearContents(); // ล้างข้อมูลเก่า
-  rosterSheet.getRange('A1:C1').setValues([['ผลัดที่', 'เวลา', 'ชื่อ - สกุล']]).setFontWeight('bold');
-  
-  const rosterData = [];
-  for (let i = 0; i < numShifts; i++) {
-    const shiftNumber = i + 1;
-    const time = timeSlots[i];
-    const person = availablePersonnel[i % availablePersonnel.length]; // ใช้ % เพื่อวนรายชื่อ
-    rosterData.push([shiftNumber, time, person]);
-  }
-  
-  rosterSheet.getRange(2, 1, rosterData.length, 3).setValues(rosterData);
-  rosterSheet.autoResizeColumns(1, 3);
+# --- Webhook ---
+@app.route("/webhook", methods=['POST'])
+def callback():
+    signature = request.headers['X-Line-Signature']
+    body = request.get_data(as_text=True)
+    app.logger.info("Request body: " + body)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+    return 'OK'
 
-  ui.alert('จัดตารางเวรเรียบร้อยแล้ว!');
-}
+# --- Message Event Handler ---
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    from linebot.models import TextSendMessage
+    user_id = event.source.user_id
+    user_message = event.message.text
 
+    # --- จัดการ State ---
+    if user_id in user_states:
+        current_step = user_states[user_id]['step']
+        if current_step.startswith("awaiting"):
+            # ตัวอย่างการจัดการลำดับขั้นต่าง ๆ
+            pass  # ใส่โค้ดเดิมของคุณตรงนี้
+    else:
+        # --- คำสั่ง Rich Menu ---
+        if user_message == "#แจ้งลา":
+            user_states[user_id] = {"step": "awaiting_leave_type", "data": {}}
+            leave_buttons = [
+                QuickReplyButton(action=MessageAction(label="ลาพัก", text="ลาพัก")),
+                QuickReplyButton(action=MessageAction(label="ลากิจ", text="ลากิจ")),
+                QuickReplyButton(action=MessageAction(label="ลาป่วย", text="ลาป่วย")),
+                QuickReplyButton(action=MessageAction(label="ราชการ", text="ราชการ")),
+                QuickReplyButton(action=MessageAction(label="❌ ยกเลิก", text="#ยกเลิก"))
+            ]
+            reply_msg = TextSendMessage(text="กรุณาเลือกประเภทการลาครับ", quick_reply=QuickReply(items=leave_buttons))
+            line_bot_api.reply_message(event.reply_token, reply_msg)
+        elif user_message == "#รีเซ็ต":
+            if user_id in user_states: del user_states[user_id]
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🔄️ รีเซ็ตเรียบร้อยแล้วครับ"))
 
-/**
- * ฟังก์ชันสร้างสรุปรายงานเป็นข้อความ
- */
-function generateSummaryReport() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
-  // --- อ่านข้อมูลจากการตั้งค่า ---
-  const settingsSheet = ss.getSheetByName('ตั้งค่า');
-  const dutyDate = settingsSheet.getRange('B2').getValue();
-  const dutyDateFormatted = Utilities.formatDate(new Date(dutyDate), "GMT+7", "d MMMM yyyy");
-  const recipient = settingsSheet.getRange('B6').getValue();
+# --- Postback Event Handler ---
+@handler.add(PostbackEvent)
+def handle_postback(event):
+    pass  # ใส่โค้ดเดิมของคุณตรงนี้
 
-  // --- อ่านข้อมูลผู้ที่ลา/งดปฏิบัติหน้าที่ ---
-  const nameSheet = ss.getSheetByName('รายชื่อ');
-  const allPersonnel = nameSheet.getRange(2, 1, nameSheet.getLastRow() - 1, 2).getValues();
-  const onLeavePersonnel = allPersonnel.filter(person => person[1] !== '');
-
-  // --- อ่านข้อมูลตารางเวรที่จัดไว้แล้ว ---
-  const rosterSheet = ss.getSheetByName('ตารางเวร');
-  const rosterData = rosterSheet.getRange(2, 1, rosterSheet.getLastRow() - 1, 3).getValues();
-  const totalOnDuty = rosterData.length;
-
-  // --- สร้างข้อความรายงาน ---
-  let report = `**เรื่อง:** สรุปเวรประจำวันและสถานะกำลังพล ประจำวันที่ ${dutyDateFormatted}\n`;
-  report += `**เรียน:** ${recipient}\n`;
-  report += `**วันที่:** ${dutyDateFormatted}\n\n`;
-  report += `เรียน ${recipient}\n\n`;
-  report += `ขอรายงานสรุปเวรประจำวันและสถานะกำลังพล ประจำวันที่ ${dutyDateFormatted} ดังนี้\n\n`;
-  
-  report += `**1. สถานะกำลังพล:**\n`;
-  onLeavePersonnel.forEach(person => {
-    report += `* ${person[0]} (${person[1]})\n`;
-  });
-  if (onLeavePersonnel.length === 0) {
-    report += `- ไม่มีกำลังพลลา\n`;
-  }
-  report += `ดังนั้น จึงมีกำลังพลพร้อมปฏิบัติหน้าที่ในวันนี้ จำนวน ${totalOnDuty} นาย\n\n`;
-
-  report += `**2. ตารางเวรประจำวัน:**\n`;
-  rosterData.forEach(row => {
-    // row[0] = ผลัดที่, row[1] = เวลา, row[2] = ชื่อ
-    report += `* ผลัดที่ ${row[0]} (${row[1]}) โดย ${row[2]}\n`;
-  });
-  
-  report += `\nจึงเรียนมาเพื่อโปรดทราบ\n\n`;
-  report += `ขอแสดงความนับถือ`;
-
-  // --- แสดงผลใน Dialog Box ---
-  const htmlOutput = HtmlService.createHtmlOutput(`<pre style="font-family: Arial, sans-serif; white-space: pre-wrap;">${report}</pre>`)
-      .setWidth(600)
-      .setHeight(400);
-  SpreadsheetApp.getUi().showModalDialog(htmlOutput, 'สรุปเวรประจำวัน');
-}
+# --- Run Server ---
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
