@@ -1,6 +1,7 @@
-CHANNEL_ACCESS_TOKEN=ใส่AccessTokenของคุณ
-CHANNEL_SECRET=ใส่Secretของคุณ
+CHANNEL_ACCESS_TOKEN=8Qa3lq+KjkF68P1W6xAkkuRyoXpz9YyuQI2nOKJRu/ndsvfGLZIft6ltdgYV8vMEbBkz5AWzYoF+CaS7u0OShmuZvo5Yufb6+Xvr4gBti4Gc4cp45MCnyD0cte94vZyyEhLKC3WJKvd9usUXqCwrOgdB04t89/1O/w1cDnyilFU=
+CHANNEL_SECRET=1d0c51790d0bff2b98dbb98dc8f72663
 
 FIREBASE_CREDENTIALS_JSON={"type": "service_account", "project_id": "...", "private_key_id": "...", "private_key": "...", "client_email": "...", "client_id": "...", "auth_uri": "...", "token_uri": "...", "auth_provider_x509_cert_url": "...", "client_x509_cert_url": "..."}
 
 PORT=5000
+
