@@ -1,6 +1,5 @@
-Flask
+flask
 gunicorn
 line-bot-sdk
 firebase-admin
 Pillow
-google-cloud-firestore
