@@ -1,30 +1,45 @@
 ```markdown
-# LINE Duty Bot (Render Deployment)
+# RUN_LOCAL.md — รันท้องถิ่น (quick copy & paste)
 
-สรุปไฟล์ที่เพิ่ม/แก้ไข:
-- app.py (แก้ไขเพื่อใช้งานกับ Firestore/LINE ถูกต้อง, แก้ปัญหา reply_token, postback parsing, status constants)
-- requirements.txt
-- Procfile
-- render.yaml (template สำหรับ Deploy บน Render)
-- .env.example
----
+1) เตรียมไฟล์
+- วางไฟล์ที่ได้: app.py, requirements.txt, Procfile, .env.example, run_local.sh
+- คัดลอก .env.example เป็น .env แล้วกรอกค่า environment variables (CHANNEL_ACCESS_TOKEN, CHANNEL_SECRET, FIREBASE_CREDENTIALS_JSON, ADMIN_API_KEY, ADMIN_LINE_ID)
 
-การเตรียมใช้งาน (สั้นๆ):
-1. สร้าง Firebase service account JSON และเก็บเป็นค่า ENV FIREBASE_CREDENTIALS_JSON (ใส่เป็น JSON string)
-2. ตั้งค่า CHANNEL_ACCESS_TOKEN และ CHANNEL_SECRET ของ LINE Messaging API ใน environment variables ของ Render
-3. ตั้งค่า ADMIN_LINE_ID เป็น LINE userId ของแอดมิน (หรือหลายคนคั่นด้วย comma)
-4. ตรวจสอบว่าฟอนต์ (เช่น Sarabun-Regular.ttf) อยู่ใน repository หรือระบุ FONT_FILENAME ใน ENV
-5. Deploy บน Render โดยเชื่อมกับ repo นี้ หรืออัปโหลดโค้ด แล้วใช้ render.yaml หรือตั้งค่า Manual:
-   - Build Command: pip install -r requirements.txt
-   - Start Command: gunicorn app:app --workers 1 --threads 8 --bind 0.0.0.0:$PORT
+2) เตรียม FIREBASE_CREDENTIALS_JSON (ถ้าใช้ไฟล์ service-account.json)
+- ถ้ามี jq:
+  export FIREBASE_CREDENTIALS_JSON="$(jq -c . service-account.json)"
+- ถ้าไม่มี jq:
+  export FIREBASE_CREDENTIALS_JSON="$(python -c 'import json,sys;print(json.dumps(json.load(open(\"service-account.json\"))))')"
+- หรือเพิ่มค่า JSON ลงในไฟล์ .env (คัดลอกเป็นบรรทัดเดียว)
 
-ข้อควรระวัง:
-- FIREBASE_CREDENTIALS_JSON ควรเป็น JSON ที่ถูกต้อง — หากใส่ผิดจะไม่สามารถเชื่อม Firebase ได้
-- LINE webhook ต้องชี้ไปที่ /webhook ของแอป (HTTPS)
-- การเสิร์ฟรูปภาพจาก /tmp อาจไม่คงที่ระหว่าง instance restart — หากต้องการเก็บรูประยะยาวให้ใช้ Cloud Storage แทน
-- ข้อความใน TextSendMessage ของ LINE เป็นข้อความธรรมดา (ไม่รองรับ Markdown) หากต้องการฟอร์แมตให้พิจารณาใช้ Flex Messages
+3) ติดตั้งและรัน (Linux / macOS)
+- ให้สิทธิ์สคริปต์:
+  chmod +x run_local.sh
+- รัน:
+  ./run_local.sh
 
-ถ้าต้องการ ผมสามารถ:
-- เปิด PR ใน repo ของคุณ (ต้องการ repo URL + 권한)
-- ปรับให้รองรับ multipart admin list ใน UI
-- ย้ายการเก็บรูปไปที่ Google Cloud Storage และส่ง URL ที่เสถียรกว่า
+4) ทดสอบด้วย ngrok (ถ้าต้องการทดสอบ LINE webhook)
+- ngrok http 5000
+- คัดลอก URL ของ ngrok แล้วตั้ง Webhook URL ใน LINE Developers เป็น:
+  https://<NGROK_ID>.ngrok.io/webhook
+- เปิด webhook ใน LINE Developers แล้วทดสอบส่งข้อความจาก LINE
+
+5) ตัวอย่าง curl สำหรับ REST API
+- สร้าง personnel (ต้องใช้ ADMIN_API_KEY):
+  curl -X POST http://localhost:5000/api/personnel \
+    -H "Authorization: Bearer <ADMIN_API_KEY>" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"สมชาย","duty_priority":1,"phone":"0812345678"}'
+
+- ดึง personnel:
+  curl http://localhost:5000/api/personnel
+
+- สร้าง leave (ไม่ต้องใช้ admin):
+  curl -X POST http://localhost:5000/api/leaves \
+    -H "Content-Type: application/json" \
+    -d '{"personnel_name":"สมชาย","leave_type":"ลากิจ","start_date":"2025-10-10","end_date":"2025-10-11","reason":"ธุระ"}'
+
+6) ข้อควรระวัง
+- FIREBASE_CREDENTIALS_JSON ต้องเป็น JSON ที่ถูกต้อง หากผิด bot จะไม่เชื่อม Firestore
+- การเสิร์ฟรูปภาพจาก /tmp อาจไม่คงที่หลัง restart — พิจารณาใช้ Cloud Storage ถ้าต้องการความคงทน
+- ใช้ gunicorn ใน production แทน flask dev server
