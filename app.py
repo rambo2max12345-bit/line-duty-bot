@@ -23,7 +23,7 @@ FIREBASE_CREDENTIALS_JSON = os.getenv("FIREBASE_CREDENTIALS_JSON")
 
 # 🌟 NEW: Admin Configuration 🌟
 # ใช้ LINE User ID ของคุณที่ตรงกับ '466123' ในการเข้าถึงคำสั่ง admin
-ADMIN_LINE_ID = "U" + "466123" # โปรดแทนที่ 'U466123' ด้วย LINE User ID จริงของผู้ดูแล
+ADMIN_LINE_ID = "U" + "max466123" # โปรดแทนที่ 'U466123' ด้วย LINE User ID จริงของผู้ดูแล
 
 # LINE API setup
 line_bot_api = None
@@ -395,3 +395,4 @@ def serve_image(filename):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
+
