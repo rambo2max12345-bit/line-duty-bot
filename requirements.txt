@@ -12,3 +12,6 @@ pip install -r requirements.txt
 
 # หากไม่มีไฟล์ requirements.txt ให้ติดตั้งด้วยตนเอง:
 pip install flask line-bot-sdk firebase-admin python-dotenv Pillow
+
+gunicorn
+uvicorn
