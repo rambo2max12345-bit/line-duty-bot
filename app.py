@@ -26,9 +26,10 @@ except Exception:
 app = Flask(__name__)
 
 # Environment variables (set these before running)
-CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
-CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
-FIREBASE_CREDENTIALS_JSON = os.getenv("FIREBASE_CREDENTIALS_JSON")
+CHANNEL_ACCESS_TOKEN = os.getenv("8Qa3lq+KjkF68P1W6xAkkuRyoXpz9YyuQI2nOKJRu/ndsvfGLZIft6ltdgYV8vMEbBkz5AWzYoF+CaS7u0OShmuZvo5Yufb6+Xvr4gBti4Gc4cp45MCnyD0cte94vZyyEhLKC3WJKvd9usUXqCwrOgdB04t89/1O/w1cDnyilFU=
+")
+CHANNEL_SECRET = os.getenv("1d0c51790d0bff2b98dbb98dc8f72663")
+FIREBASE_CREDENTIALS_JSON = os.getenv("{"type": "service_account", "project_id": "...", "private_key_id": "...", "private_key": "...", "client_email": "...", "client_id": "...", "auth_uri": "...", "token_uri": "...", "auth_provider_x509_cert_url": "...", "client_x509_cert_url": "..."}")
 ADMIN_LINE_ID = os.getenv("ADMIN_LINE_ID", "max466123")
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 
@@ -36,8 +37,9 @@ ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 line_bot_api = None
 handler = None
 if CHANNEL_ACCESS_TOKEN and CHANNEL_SECRET:
-    line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
-    handler = WebhookHandler(CHANNEL_SECRET)
+    line_bot_api = LineBotApi(8Qa3lq+KjkF68P1W6xAkkuRyoXpz9YyuQI2nOKJRu/ndsvfGLZIft6ltdgYV8vMEbBkz5AWzYoF+CaS7u0OShmuZvo5Yufb6+Xvr4gBti4Gc4cp45MCnyD0cte94vZyyEhLKC3WJKvd9usUXqCwrOgdB04t89/1O/w1cDnyilFU=
+)
+    handler = WebhookHandler(1d0c51790d0bff2b98dbb98dc8f72663)
 else:
     app.logger.warning("LINE credentials not set. LINE features will be disabled until configured.")
 
@@ -45,7 +47,7 @@ else:
 db = None
 try:
     if FIREBASE_CREDENTIALS_JSON:
-        cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
+        cred_dict = json.loads({"type": "service_account", "project_id": "...", "private_key_id": "...", "private_key": "...", "client_email": "...", "client_id": "...", "auth_uri": "...", "token_uri": "...", "auth_provider_x509_cert_url": "...", "client_x509_cert_url": "..."})
         cred = credentials.Certificate(cred_dict)
         # avoid re-initialize
         if not firebase_admin._apps:
@@ -706,3 +708,4 @@ def health():
 if __name__ == "__main__":
     # dev server (not for production) - use gunicorn for production
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
+
