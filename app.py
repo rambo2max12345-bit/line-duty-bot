@@ -26,9 +26,9 @@ except Exception:
 app = Flask(__name__)
 
 # Environment variables (set these before running)
-CHANNEL_ACCESS_TOKEN = os.getenv("8Qa3lq+KjkF68P1W6xAkkuRyoXpz9YyuQI2nOKJRu/ndsvfGLZIft6ltdgYV8vMEbBkz5AWzYoF+CaS7u0OShmuZvo5Yufb6+Xvr4gBti4Gc4cp45MCnyD0cte94vZyyEhLKC3WJKvd9usUXqCwrOgdB04t89/1O/w1cDnyilFU=
+CHANNEL_ACCESS_TOKEN = os.getenv("1CnVa/zE6C8/TzIzHo2zfGEGbvUIRmUUsVYOydz6tq3we8IB/wORSikLPcySu3CxAwTYGoGUjmSLMlCqKnqwMm5JVvPO99Lupsn+p4rQ7orQkd/+cA1uArroKQH1haQHNIZwck+QlkkIpPujWModBQdB04t89/1O/w1cDnyilFU=
 ")
-CHANNEL_SECRET = os.getenv("1d0c51790d0bff2b98dbb98dc8f72663")
+CHANNEL_SECRET = os.getenv("b3985ff63851dc0c8505e43ac7d6a926")
 FIREBASE_CREDENTIALS_JSON = os.getenv("{"type": "service_account", "project_id": "...", "private_key_id": "...", "private_key": "...", "client_email": "...", "client_id": "...", "auth_uri": "...", "token_uri": "...", "auth_provider_x509_cert_url": "...", "client_x509_cert_url": "..."}")
 ADMIN_LINE_ID = os.getenv("ADMIN_LINE_ID", "max466123")
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
@@ -708,4 +708,5 @@ def health():
 if __name__ == "__main__":
     # dev server (not for production) - use gunicorn for production
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
+
 
