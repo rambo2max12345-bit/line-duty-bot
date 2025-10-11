@@ -37,7 +37,7 @@ ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 line_bot_api = None
 handler = None
 if CHANNEL_ACCESS_TOKEN and CHANNEL_SECRET:
-    line_bot_api = LineBotApi(8Qa3lq+KjkF68P1W6xAkkuRyoXpz9YyuQI2nOKJRu/ndsvfGLZIft6ltdgYV8vMEbBkz5AWzYoF+CaS7u0OShmuZvo5Yufb6+Xvr4gBti4Gc4cp45MCnyD0cte94vZyyEhLKC3WJKvd9usUXqCwrOgdB04t89/1O/w1cDnyilFU=
+    line_bot_api = LineBotApi(1CnVa/zE6C8/TzIzHo2zfGEGbvUIRmUUsVYOydz6tq3we8IB/wORSikLPcySu3CxAwTYGoGUjmSLMlCqKnqwMm5JVvPO99Lupsn+p4rQ7orQkd/+cA1uArroKQH1haQHNIZwck+QlkkIpPujWModBQdB04t89/1O/w1cDnyilFU=
 )
     handler = WebhookHandler(1d0c51790d0bff2b98dbb98dc8f72663)
 else:
@@ -708,5 +708,6 @@ def health():
 if __name__ == "__main__":
     # dev server (not for production) - use gunicorn for production
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
+
 
 
